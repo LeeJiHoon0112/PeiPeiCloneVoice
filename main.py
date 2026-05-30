@@ -15,10 +15,17 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 def main():
-    from PyQt5.QtWidgets import QApplication
+    from PyQt5.QtWidgets import QApplication, QDialog
+    from app.login_dialog import LoginDialog
     from app.main_window import MainWindow
 
     app = QApplication(sys.argv)
+
+    # Màn hình đăng nhập: sai/đóng thì thoát, không vào app.
+    login = LoginDialog()
+    if login.exec_() != QDialog.Accepted:
+        return 0
+
     win = MainWindow()
     win.show()
     return app.exec_()
