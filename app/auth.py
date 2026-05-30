@@ -5,7 +5,7 @@
 - Chủ máy có thể đổi mật khẩu riêng: ghi hash mới vào user_data/password.hash
   (file này KHÔNG đẩy lên GitHub). Nếu có file đó thì ưu tiên dùng nó.
 
-Mật khẩu mặc định: TeamDaLat2026   (đổi bằng hàm set_password hoặc nút trong app)
+Mật khẩu được chủ app chia sẻ riêng cho người dùng (KHÔNG ghi ở đây).
 """
 import os
 import hashlib
