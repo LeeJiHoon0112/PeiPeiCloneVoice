@@ -16,7 +16,9 @@ __pycache__/
 # File tạm / kết quả
 *.wav
 *.log
+# Script test tạm (đặt tên _xxx.py) — nhưng KHÔNG bỏ qua __init__.py của package
 _*.py
+!**/__init__.py
 
 # Ghi chú nội bộ khi phát triển (không cần cho người dùng)
 context.md
