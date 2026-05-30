@@ -1,0 +1,28 @@
+# Môi trường ảo (KHÔNG đẩy lên GitHub — quá nặng, máy khác tự tạo)
+venv/
+env/
+
+# Model tải về (~4.7GB — quá nặng cho GitHub, máy khác tự tải lần đầu)
+models/
+
+# Dữ liệu người dùng (giọng đã tạo + audio xuất ra)
+user_data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# File tạm / kết quả
+*.wav
+*.log
+_*.py
+
+# Ghi chú nội bộ khi phát triển (không cần cho người dùng)
+context.md
+
+# IDE / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

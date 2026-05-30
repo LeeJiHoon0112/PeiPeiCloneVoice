@@ -1,0 +1,26 @@
+# PeiPei Clone Voice — dependencies
+#
+# LƯU Ý: torch + torchaudio phải cài từ index CUDA riêng, KHÔNG để chung ở đây.
+# Hãy dùng install.bat (đã tự xử lý) thay vì pip install -r trực tiếp.
+#
+# Cài torch trước (CUDA 12.8):
+#   pip install --index-url https://download.pytorch.org/whl/cu128 torch==2.8.0+cu128 torchaudio==2.8.0+cu128
+# Rồi cài phần còn lại:
+#   pip install -r requirements.txt
+
+omnivoice==0.1.5
+transformers>=5.3.0
+PyQt5==5.15.11
+soundfile==0.13.1
+librosa==0.11.0
+numpy
+accelerate
+
+# --- Runtime extras cho audio tokenizer (cài bằng --no-deps trong install.bat) ---
+# Không để pip tự kéo dependencies của chúng (dễ xung đột với transformers/omnivoice).
+# install.bat sẽ chạy: pip install --no-deps <các gói dưới đây>
+#   einx==0.4.3
+#   torch-dct==0.1.6
+#   vector-quantize-pytorch==1.29.1
+#   torchtune==0.6.1
+#   torchao==0.17.0
