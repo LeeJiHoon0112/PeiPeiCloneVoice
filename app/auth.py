@@ -14,7 +14,7 @@ import hashlib
 _SALT = "ppcv_v1_8f3a"
 
 # Hash (SHA-256 có muối) của mật khẩu mặc định — KHÔNG ghi mật khẩu chữ thường ở đây.
-_DEFAULT_HASH = "28ce980a605ba78b7897b5259b84589dab5b786500fa136c1358bdf393478caf"
+_DEFAULT_HASH = "02d4a2552d4b31663ae4394cb885f5ddd5a36b35be81fb5754e1254a47fd6553"
 
 # Nơi lưu hash tùy chỉnh (nếu chủ máy đổi mật khẩu). Không commit lên git.
 from . import config  # noqa: E402
