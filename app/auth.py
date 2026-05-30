@@ -5,7 +5,7 @@
 - Chủ máy có thể đổi mật khẩu riêng: ghi hash mới vào user_data/password.hash
   (file này KHÔNG đẩy lên GitHub). Nếu có file đó thì ưu tiên dùng nó.
 
-Mật khẩu mặc định: PeiPei@2026   (đổi bằng hàm set_password hoặc nút trong app)
+Mật khẩu mặc định: TeamDaLat2026   (đổi bằng hàm set_password hoặc nút trong app)
 """
 import os
 import hashlib
@@ -14,7 +14,7 @@ import hashlib
 _SALT = "ppcv_v1_8f3a"
 
 # Hash của mật khẩu mặc định "PeiPei@2026".
-_DEFAULT_HASH = "972f5ec2f864bb7c9b0a1c72c0da74831e3464893d65f42de6212f4f0f02e806"
+_DEFAULT_HASH = "28ce980a605ba78b7897b5259b84589dab5b786500fa136c1358bdf393478caf"
 
 # Nơi lưu hash tùy chỉnh (nếu chủ máy đổi mật khẩu). Không commit lên git.
 from . import config  # noqa: E402
