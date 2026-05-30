@@ -263,6 +263,13 @@ class MainWindow(QMainWindow):
         pl.addWidget(self.status_device)
         lay.addWidget(pill)
 
+        # Đăng xuất (bỏ ghi nhớ máy này → lần sau mở app phải nhập lại mật khẩu)
+        logout_btn = QPushButton("🔒  Đăng xuất")
+        logout_btn.setObjectName("Ghost")
+        logout_btn.setCursor(Qt.PointingHandCursor)
+        logout_btn.clicked.connect(self._logout)
+        lay.addWidget(logout_btn)
+
         lay.addSpacing(12)
 
         # NHẬT KÝ (logs) — chiếm phần còn lại của sidebar
@@ -862,6 +869,16 @@ class MainWindow(QMainWindow):
         p = self._pick_audio()
         if p:
             self.new_ref_audio.setText(p)
+
+    def _logout(self):
+        from app import auth
+        r = QMessageBox.question(
+            self, "Đăng xuất",
+            "Bỏ ghi nhớ trên máy này? Lần sau mở app sẽ phải nhập lại mật khẩu.\n"
+            "(App sẽ đóng lại.)")
+        if r == QMessageBox.Yes:
+            auth.forget_login()
+            self.close()
 
     def closeEvent(self, e):
         self._stop()

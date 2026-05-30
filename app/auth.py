@@ -20,6 +20,9 @@ _DEFAULT_HASH = "972f5ec2f864bb7c9b0a1c72c0da74831e3464893d65f42de6212f4f0f02e80
 from . import config  # noqa: E402
 
 _OVERRIDE_FILE = os.path.join(config.USER_DATA_DIR, "password.hash")
+# Dấu "đã ghi nhớ máy này": lưu hash mật khẩu hiện hành. Nếu đổi mật khẩu,
+# dấu cũ không còn khớp → máy đó phải nhập lại. Không commit lên git.
+_REMEMBER_FILE = os.path.join(config.USER_DATA_DIR, "remember.dat")
 
 
 def hash_password(pw: str) -> str:
@@ -45,7 +48,42 @@ def verify(pw: str) -> bool:
 
 
 def set_password(new_pw: str):
-    """Đổi mật khẩu (lưu hash mới vào user_data/password.hash)."""
+    """Đổi mật khẩu (lưu hash mới vào user_data/password.hash).
+
+    Đổi mật khẩu cũng XÓA dấu ghi nhớ → mọi máy phải đăng nhập lại.
+    """
     config.ensure_dirs()
     with open(_OVERRIDE_FILE, "w", encoding="utf-8") as f:
         f.write(hash_password(new_pw))
+    forget_login()
+
+
+# ------------------------------------------------------------- ghi nhớ máy này
+def remember_login():
+    """Đánh dấu máy này đã đăng nhập (lưu hash mật khẩu hiện hành)."""
+    config.ensure_dirs()
+    try:
+        with open(_REMEMBER_FILE, "w", encoding="utf-8") as f:
+            f.write(_current_hash())
+    except Exception:
+        pass
+
+
+def is_remembered() -> bool:
+    """True nếu máy này đã ghi nhớ VÀ dấu còn khớp mật khẩu hiện hành."""
+    try:
+        if os.path.exists(_REMEMBER_FILE):
+            with open(_REMEMBER_FILE, encoding="utf-8") as f:
+                return f.read().strip() == _current_hash()
+    except Exception:
+        pass
+    return False
+
+
+def forget_login():
+    """Xóa dấu ghi nhớ (đăng xuất khỏi máy này)."""
+    try:
+        if os.path.exists(_REMEMBER_FILE):
+            os.remove(_REMEMBER_FILE)
+    except Exception:
+        pass

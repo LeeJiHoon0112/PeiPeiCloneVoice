@@ -56,6 +56,10 @@ class LoginDialog(QDialog):
             lambda on: self.pw.setEchoMode(QLineEdit.Normal if on else QLineEdit.Password))
         lay.addWidget(self.show_cb)
 
+        self.remember_cb = QCheckBox("Ghi nhớ trên máy này (lần sau khỏi nhập)")
+        self.remember_cb.setChecked(True)
+        lay.addWidget(self.remember_cb)
+
         self.err = QLabel("")
         self.err.setObjectName("Err")
         lay.addWidget(self.err)
@@ -71,6 +75,8 @@ class LoginDialog(QDialog):
 
     def _try(self):
         if auth.verify(self.pw.text()):
+            if self.remember_cb.isChecked():
+                auth.remember_login()
             self.accept()
             return
         self._tries += 1

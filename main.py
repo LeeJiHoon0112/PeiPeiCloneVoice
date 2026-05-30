@@ -21,10 +21,13 @@ def main():
 
     app = QApplication(sys.argv)
 
-    # Màn hình đăng nhập: sai/đóng thì thoát, không vào app.
-    login = LoginDialog()
-    if login.exec_() != QDialog.Accepted:
-        return 0
+    # Nếu máy này đã "ghi nhớ" và còn khớp mật khẩu hiện hành → bỏ qua đăng nhập.
+    from app import auth
+    if not auth.is_remembered():
+        # Màn hình đăng nhập: sai/đóng thì thoát, không vào app.
+        login = LoginDialog()
+        if login.exec_() != QDialog.Accepted:
+            return 0
 
     win = MainWindow()
     win.show()
