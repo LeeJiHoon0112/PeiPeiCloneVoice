@@ -13,7 +13,7 @@ import hashlib
 # "Muối" cố định để hai mật khẩu giống nhau không ra cùng hash với app khác.
 _SALT = "ppcv_v1_8f3a"
 
-# Hash của mật khẩu mặc định "PeiPei@2026".
+# Hash (SHA-256 có muối) của mật khẩu mặc định — KHÔNG ghi mật khẩu chữ thường ở đây.
 _DEFAULT_HASH = "28ce980a605ba78b7897b5259b84589dab5b786500fa136c1358bdf393478caf"
 
 # Nơi lưu hash tùy chỉnh (nếu chủ máy đổi mật khẩu). Không commit lên git.
