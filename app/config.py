@@ -96,6 +96,41 @@ def ensure_dirs():
     os.makedirs(HF_CACHE_DIR, exist_ok=True)
 
 
+# ------------------------------------------------------- cài đặt người dùng
+# Lưu các tùy chọn theo máy (thư mục tự động lưu, bật/tắt...) vào user_data.
+# File này KHÔNG đẩy lên GitHub.
+SETTINGS_FILE = os.path.join(USER_DATA_DIR, "settings.json")
+
+
+def load_settings() -> dict:
+    try:
+        if os.path.exists(SETTINGS_FILE):
+            with open(SETTINGS_FILE, encoding="utf-8") as f:
+                return json.load(f) or {}
+    except Exception:
+        pass
+    return {}
+
+
+def save_settings(d: dict):
+    ensure_dirs()
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def get_setting(key, default=None):
+    return load_settings().get(key, default)
+
+
+def set_setting(key, value):
+    d = load_settings()
+    d[key] = value
+    save_settings(d)
+
+
 def setup_hf_cache_env():
     """Hướng HuggingFace tải model vào ./models/hf-cache (gọn trong app, dễ chia sẻ)."""
     os.makedirs(HF_CACHE_DIR, exist_ok=True)

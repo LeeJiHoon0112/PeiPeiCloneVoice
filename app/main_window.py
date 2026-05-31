@@ -19,7 +19,7 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QPushButton, QComboBox, QLineEdit, QTextEdit, QPlainTextEdit,
     QSlider, QFileDialog, QMessageBox, QListWidget, QListWidgetItem,
-    QStackedWidget, QFrame, QProgressBar,
+    QStackedWidget, QFrame, QProgressBar, QCheckBox,
 )
 
 from . import config
@@ -160,6 +160,14 @@ def _field(text):
     return lab
 
 
+def _safe_filename(name: str) -> str:
+    """Bỏ ký tự không hợp lệ cho tên file Windows."""
+    bad = '<>:"/\\|?*'
+    cleaned = "".join("_" if c in bad else c for c in (name or "").strip())
+    cleaned = cleaned.strip(" .")
+    return cleaned or "output"
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -174,6 +182,11 @@ class MainWindow(QMainWindow):
         self._task = None
         self._last_output = None
         self._quality_steps = [("Nhanh", 16), ("Chuẩn", 32), ("Cao", 48)]
+
+        # Tự động lưu audio: nhớ thư mục người dùng đã chọn (theo máy)
+        self._name_hint = "output"
+        self.autosave_dir = config.get_setting("autosave_dir", config.OUTPUTS_DIR)
+        self.autosave_on = bool(config.get_setting("autosave_on", True))
 
         self._t0 = 0.0
         self._prog_total = 0
@@ -363,6 +376,30 @@ class MainWindow(QMainWindow):
         self.btn_generate.setCursor(Qt.PointingHandCursor)
         self.btn_generate.clicked.connect(self._do_generate)
         ll.addWidget(self.btn_generate)
+
+        # tự động lưu vào thư mục người dùng chọn
+        asrow = QHBoxLayout()
+        asrow.setSpacing(8)
+        self.autosave_cb = QCheckBox("Tự động lưu vào:")
+        self.autosave_cb.setChecked(self.autosave_on)
+        self.autosave_cb.toggled.connect(self._toggle_autosave)
+        self.autosave_lbl = QLabel("")
+        self.autosave_lbl.setObjectName("Hint")
+        btn_pick_dir = QPushButton("Đổi thư mục...")
+        btn_pick_dir.setObjectName("Ghost")
+        btn_pick_dir.setCursor(Qt.PointingHandCursor)
+        btn_pick_dir.clicked.connect(self._pick_autosave_dir)
+        btn_open_dir = QPushButton("Mở")
+        btn_open_dir.setObjectName("Ghost")
+        btn_open_dir.setCursor(Qt.PointingHandCursor)
+        btn_open_dir.setToolTip("Mở thư mục tự động lưu")
+        btn_open_dir.clicked.connect(self._open_autosave_dir)
+        asrow.addWidget(self.autosave_cb)
+        asrow.addWidget(self.autosave_lbl, 1)
+        asrow.addWidget(btn_pick_dir)
+        asrow.addWidget(btn_open_dir)
+        ll.addLayout(asrow)
+        self._update_autosave_label()
 
         # kết quả
         outrow = QHBoxLayout()
@@ -566,6 +603,36 @@ class MainWindow(QMainWindow):
         else:
             self.prog_time.setText(f"⏹ Dừng sau {self._fmt_dur(el)}")
 
+    # --------------------------------------------------- tự động lưu thư mục
+    def _update_autosave_label(self):
+        p = self.autosave_dir or config.OUTPUTS_DIR
+        self.autosave_lbl.setToolTip(p)
+        disp = p if len(p) <= 38 else "…" + p[-37:]
+        self.autosave_lbl.setText(disp)
+        self.autosave_lbl.setEnabled(self.autosave_on)
+
+    def _toggle_autosave(self, on):
+        self.autosave_on = bool(on)
+        config.set_setting("autosave_on", self.autosave_on)
+        self._update_autosave_label()
+
+    def _pick_autosave_dir(self):
+        d = QFileDialog.getExistingDirectory(
+            self, "Chọn thư mục tự động lưu audio", self.autosave_dir or "")
+        if d:
+            self.autosave_dir = d
+            config.set_setting("autosave_dir", d)
+            self._update_autosave_label()
+            self._log(f"Thư mục tự động lưu: {d}")
+
+    def _open_autosave_dir(self):
+        d = self.autosave_dir or config.OUTPUTS_DIR
+        try:
+            os.makedirs(d, exist_ok=True)
+            os.startfile(d)  # Windows
+        except Exception as e:
+            self._error(f"Không mở được thư mục: {e}")
+
     def _lang_code(self):
         return config.LANGUAGES[self.lang_combo.currentIndex()][1]
 
@@ -744,6 +811,7 @@ class MainWindow(QMainWindow):
             name = self.profile_combo.currentText().strip()
             if not name:
                 return self._error("Chưa có giọng đã lưu. Hãy tạo ở tab Quản lý giọng.")
+            self._name_hint = _safe_filename(name)
 
             def job(log=None, progress=None):
                 prompt = self.profiles.load_prompt(name)
@@ -754,12 +822,14 @@ class MainWindow(QMainWindow):
             rt = self.ref_text_edit.toPlainText().strip()
             if not ra or not os.path.exists(ra):
                 return self._error("Hãy chọn file audio mẫu hợp lệ.")
+            self._name_hint = "clone"
 
             def job(log=None, progress=None):
                 return self.engine.generate(text, ref_audio=ra, ref_text=rt or None,
                                             progress=progress, **common)
         else:
             ins = self.instruct_edit.toPlainText().strip()
+            self._name_hint = "design"
 
             def job(log=None, progress=None):
                 return self.engine.generate(text, instruct=ins or None,
@@ -769,17 +839,38 @@ class MainWindow(QMainWindow):
 
     def _on_generated(self, result):
         sr, audio = result
-        self._present_audio(sr, audio, prefix="output")
+        # Lưu thẳng vào thư mục người dùng đã chọn (nếu bật tự động lưu).
+        target = self.autosave_dir if self.autosave_on else None
+        self._present_audio(sr, audio, prefix=self._name_hint or "output", target_dir=target)
 
-    def _present_audio(self, sr, audio, prefix="output"):
+    def _present_audio(self, sr, audio, prefix="output", target_dir=None):
+        """Lưu audio (vào target_dir nếu có, không thì outputs), cập nhật UI, tự phát.
+
+        Nếu lưu vào target_dir thất bại (thư mục bị xóa, không có quyền...) thì
+        tự động lưu tạm vào user_data/outputs để không mất kết quả.
+        """
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        out = os.path.join(config.OUTPUTS_DIR, f"{prefix}_{ts}.wav")
-        sf.write(out, audio, sr)
+        fname = f"{_safe_filename(prefix)}_{ts}.wav"
+        out_dir = target_dir or config.OUTPUTS_DIR
+        autosaved = bool(target_dir)
+        out = os.path.join(out_dir, fname)
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+            sf.write(out, audio, sr)
+        except Exception as e:
+            # Dự phòng: lưu vào outputs mặc định
+            out = os.path.join(config.OUTPUTS_DIR, fname)
+            os.makedirs(config.OUTPUTS_DIR, exist_ok=True)
+            sf.write(out, audio, sr)
+            autosaved = False
+            self._log(f"⚠ Không lưu được vào thư mục đã chọn ({e}). Đã lưu tạm vào outputs.")
+
         self._last_output = out
         dur = len(audio) / sr
-        self.out_label.setText(f"✅  {os.path.basename(out)}   ·   {dur:.1f}s")
+        tag = "💾 Đã tự động lưu" if autosaved else "✅"
+        self.out_label.setText(f"{tag}: {os.path.basename(out)}   ·   {dur:.1f}s")
         self.out_label.setStyleSheet(f"color: {C_TEXT};")
-        self._log(f"Đã lưu: {out}")
+        self._log(("Đã tự động lưu: " if autosaved else "Đã lưu: ") + out)
         for b in (self.btn_play, self.btn_stop, self.btn_saveas):
             b.setEnabled(True)
         self._play()
