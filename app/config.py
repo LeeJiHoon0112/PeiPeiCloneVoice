@@ -9,6 +9,7 @@ Thứ tự dò model:
 Không tìm thấy → trả về ID HuggingFace để TỰ TẢI VỀ lần đầu (vào ./models/hf-cache).
 """
 import os
+import json
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -114,11 +115,11 @@ def load_settings() -> dict:
 
 def save_settings(d: dict):
     ensure_dirs()
-    try:
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-            json.dump(d, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+    # Ghi an toàn: tạo chuỗi JSON TRƯỚC, chỉ mở file ghi khi chắc chắn không lỗi
+    # (tránh để lại file rỗng nếu có sự cố). Lỗi I/O thật sẽ ném ra để thấy được.
+    text = json.dumps(d, ensure_ascii=False, indent=2)
+    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+        f.write(text)
 
 
 def get_setting(key, default=None):
