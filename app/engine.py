@@ -25,50 +25,82 @@ def _fmt_srt_time(t: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-def _chunk_by_words(text: str, max_words: int) -> list[list[str]]:
-    """Cắt câu thành các cụm ngắn ≤ max_words từ, độ dài các cụm cân đối nhau.
+def _split_long_segment(text, start, end, max_dur):
+    """Một câu DÀI hơn max_dur giây → tách thành nhiều phần, mỗi phần ≤ max_dur.
 
-    VD 11 từ, max=8 → 2 dòng [6, 5] (cân đối) thay vì [8, 3] (lệch).
+    Chia chữ theo TỈ LỆ số từ để mốc thời gian khớp với audio.
     """
     import math
+    dur = max(0.0, end - start)
     words = text.split()
-    if not words:
-        return []
-    n = len(words)
-    max_words = max(1, int(max_words))
-    nlines = max(1, math.ceil(n / max_words))
-    per = math.ceil(n / nlines)
-    return [words[i:i + per] for i in range(0, n, per)]
+    if dur <= max_dur or len(words) <= 1:
+        return [{"text": text, "start": start, "end": end}]
+    nparts = max(2, math.ceil(dur / max_dur))
+    per = math.ceil(len(words) / nparts)
+    chunks = [words[i:i + per] for i in range(0, len(words), per)]
+    total = len(words)
+    out = []
+    t = start
+    cum = 0
+    for k, ch in enumerate(chunks):
+        cum += len(ch)
+        ce = end if k == len(chunks) - 1 else start + dur * cum / total
+        out.append({"text": " ".join(ch), "start": t, "end": ce})
+        t = ce
+    return out
 
 
-def segments_to_srt(segments: list[dict], max_words: int = 8) -> str:
+def segments_to_srt(segments: list[dict], min_dur: float = 4.0,
+                    max_dur: float = 8.0) -> str:
     """Dựng nội dung .srt từ danh sách câu [{text,start,end}].
 
-    Mỗi câu được cắt thành các dòng ngắn ≤ max_words từ (cho khớp phần mềm
-    dựng video). Thời gian của câu được chia cho các dòng theo TỈ LỆ số từ.
+    Quy tắc gom phụ đề (theo yêu cầu):
+      - Mỗi đoạn phụ đề là 1 hoặc 2 CÂU.
+      - Không dài quá max_dur giây (mặc định 8s) — ràng buộc cứng.
+      - Cố gắng không ngắn hơn min_dur giây (mặc định 4s): nếu 1 câu ngắn hơn
+        min_dur thì ghép thêm câu kế (tối đa 2 câu) miễn tổng ≤ max_dur.
+      - Câu nào tự nó dài hơn max_dur sẽ được tách nhỏ theo thời gian.
     """
-    lines = []
-    idx = 1
+    if max_dur < min_dur:
+        max_dur = min_dur
+
+    # B1: tách các câu quá dài thành đơn vị ≤ max_dur
+    units = []
     for seg in segments:
         text = (seg.get("text") or "").strip()
-        chunks = _chunk_by_words(text, max_words)
-        if not chunks:
+        if not text:
             continue
-        start = float(seg.get("start", 0.0))
-        end = float(seg.get("end", start))
-        dur = max(0.0, end - start)
-        total_words = sum(len(c) for c in chunks)
-        t = start
-        for k, c in enumerate(chunks):
-            w = len(c)
-            seg_dur = (dur * w / total_words) if total_words else dur
-            cs = t
-            ce = end if k == len(chunks) - 1 else t + seg_dur  # dòng cuối khớp đúng end
-            t = ce
-            lines.append(str(idx)); idx += 1
-            lines.append(f"{_fmt_srt_time(cs)} --> {_fmt_srt_time(ce)}")
-            lines.append(" ".join(c))
-            lines.append("")  # dòng trống ngăn cách
+        units.extend(_split_long_segment(
+            text, float(seg.get("start", 0.0)),
+            float(seg.get("end", 0.0)), max_dur))
+
+    # B2: gom 1–2 đơn vị thành một đoạn phụ đề (cue) theo ràng buộc thời gian
+    cues = []
+    i = 0
+    n = len(units)
+    while i < n:
+        u = units[i]
+        cur = {"text": u["text"], "start": u["start"], "end": u["end"]}
+        i += 1
+        # Ghép thêm 1 câu nữa (=> 2 câu) nếu cue đang ngắn hơn min_dur
+        # và tổng vẫn không vượt max_dur.
+        if i < n:
+            nxt = units[i]
+            cur_len = cur["end"] - cur["start"]
+            combined = nxt["end"] - cur["start"]
+            if cur_len < min_dur and combined <= max_dur:
+                cur["text"] = (cur["text"].rstrip() + " " + nxt["text"].lstrip()).strip()
+                cur["end"] = nxt["end"]
+                i += 1
+        cues.append(cur)
+
+    # B3: render SRT
+    lines = []
+    for idx, c in enumerate(cues, 1):
+        lines.append(str(idx))
+        lines.append(f"{_fmt_srt_time(c['start'])} --> {_fmt_srt_time(c['end'])}")
+        lines.append((c.get("text") or "").strip())
+        lines.append("")
     return "\n".join(lines).strip() + "\n"
 
 
