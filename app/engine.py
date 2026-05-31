@@ -14,6 +14,64 @@ from . import config
 REF_MAX_SECONDS = 20.0
 
 
+def _fmt_srt_time(t: float) -> str:
+    """Đổi giây (float) sang dạng SRT: HH:MM:SS,mmm"""
+    if t < 0:
+        t = 0.0
+    ms = int(round(t * 1000))
+    h, ms = divmod(ms, 3600_000)
+    m, ms = divmod(ms, 60_000)
+    s, ms = divmod(ms, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def _chunk_by_words(text: str, max_words: int) -> list[list[str]]:
+    """Cắt câu thành các cụm ngắn ≤ max_words từ, độ dài các cụm cân đối nhau.
+
+    VD 11 từ, max=8 → 2 dòng [6, 5] (cân đối) thay vì [8, 3] (lệch).
+    """
+    import math
+    words = text.split()
+    if not words:
+        return []
+    n = len(words)
+    max_words = max(1, int(max_words))
+    nlines = max(1, math.ceil(n / max_words))
+    per = math.ceil(n / nlines)
+    return [words[i:i + per] for i in range(0, n, per)]
+
+
+def segments_to_srt(segments: list[dict], max_words: int = 8) -> str:
+    """Dựng nội dung .srt từ danh sách câu [{text,start,end}].
+
+    Mỗi câu được cắt thành các dòng ngắn ≤ max_words từ (cho khớp phần mềm
+    dựng video). Thời gian của câu được chia cho các dòng theo TỈ LỆ số từ.
+    """
+    lines = []
+    idx = 1
+    for seg in segments:
+        text = (seg.get("text") or "").strip()
+        chunks = _chunk_by_words(text, max_words)
+        if not chunks:
+            continue
+        start = float(seg.get("start", 0.0))
+        end = float(seg.get("end", start))
+        dur = max(0.0, end - start)
+        total_words = sum(len(c) for c in chunks)
+        t = start
+        for k, c in enumerate(chunks):
+            w = len(c)
+            seg_dur = (dur * w / total_words) if total_words else dur
+            cs = t
+            ce = end if k == len(chunks) - 1 else t + seg_dur  # dòng cuối khớp đúng end
+            t = ce
+            lines.append(str(idx)); idx += 1
+            lines.append(f"{_fmt_srt_time(cs)} --> {_fmt_srt_time(ce)}")
+            lines.append(" ".join(c))
+            lines.append("")  # dòng trống ngăn cách
+    return "\n".join(lines).strip() + "\n"
+
+
 def _split_sentences(text: str) -> list[str]:
     """Tách văn bản thành các câu để chèn ngắt nghỉ giữa chúng.
 
@@ -195,7 +253,11 @@ class VoiceEngine:
         ref_text: str | None = None,
         instruct: str | None = None,
         progress=None,
-    ) -> tuple[int, np.ndarray]:
+        with_segments: bool = False,
+    ):
+        """Sinh audio. Trả về (sr, audio); nếu with_segments=True trả thêm danh sách
+        đoạn [{"text", "start", "end"}] (giây) để xuất phụ đề SRT khớp từng câu.
+        """
         if not self.ready:
             raise RuntimeError("Model chưa được nạp.")
 
@@ -227,12 +289,15 @@ class VoiceEngine:
 
         # Tách câu để (a) báo tiến độ % theo từng câu, (b) chèn ngắt nghỉ nếu cần.
         # Có nhiều câu → đọc từng câu rồi nối; chỉ chèn khoảng lặng khi pause_sec > 0.
+        sr = self.sample_rate
         sentences = _split_sentences(text)
         if len(sentences) > 1:
             total = len(sentences)
-            gap = (np.zeros(int(pause_sec * self.sample_rate), dtype=np.float32)
-                   if pause_sec and pause_sec > 0 else None)
+            gap_n = int(pause_sec * sr) if pause_sec and pause_sec > 0 else 0
+            gap = np.zeros(gap_n, dtype=np.float32) if gap_n else None
             pieces: list[np.ndarray] = []
+            segments: list[dict] = []
+            cur = 0  # vị trí mẫu hiện tại trong audio tổng
             _report(0, total)
             for i, sent in enumerate(sentences):
                 audios = self.model.generate(text=sent, **base)
@@ -240,9 +305,14 @@ class VoiceEngine:
                 piece = _reduce_breath(piece, self.sample_rate, breath_reduce)
                 if i and gap is not None:
                     pieces.append(gap)
+                    cur += gap_n
+                start = cur
                 pieces.append(piece)
+                cur += len(piece)
+                segments.append({"text": sent, "start": start / sr, "end": cur / sr})
                 _report(i + 1, total)   # đã xong câu thứ (i+1)/total
-            return self.sample_rate, np.concatenate(pieces)
+            audio = np.concatenate(pieces)
+            return (sr, audio, segments) if with_segments else (sr, audio)
 
         # Một câu duy nhất: không biết % giữa chừng → báo 0% rồi 100% khi xong.
         _report(0, 1)
@@ -250,4 +320,7 @@ class VoiceEngine:
         audio = np.asarray(audios[0], dtype=np.float32)
         audio = _reduce_breath(audio, self.sample_rate, breath_reduce)
         _report(1, 1)
-        return self.sample_rate, audio
+        if with_segments:
+            seg = [{"text": text.strip(), "start": 0.0, "end": len(audio) / sr}]
+            return sr, audio, seg
+        return sr, audio

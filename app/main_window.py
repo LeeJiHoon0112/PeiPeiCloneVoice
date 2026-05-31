@@ -19,11 +19,11 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QPushButton, QComboBox, QLineEdit, QTextEdit, QPlainTextEdit,
     QSlider, QFileDialog, QMessageBox, QListWidget, QListWidgetItem,
-    QStackedWidget, QFrame, QProgressBar, QCheckBox,
+    QStackedWidget, QFrame, QProgressBar, QCheckBox, QSpinBox,
 )
 
 from . import config
-from .engine import VoiceEngine
+from .engine import VoiceEngine, segments_to_srt
 from .profiles import ProfileManager
 from .workers import Task
 
@@ -187,6 +187,8 @@ class MainWindow(QMainWindow):
         self._name_hint = "output"
         self.autosave_dir = config.get_setting("autosave_dir", config.OUTPUTS_DIR)
         self.autosave_on = bool(config.get_setting("autosave_on", True))
+        self.srt_on = bool(config.get_setting("srt_on", True))
+        self.srt_words = int(config.get_setting("srt_words", 8))
 
         self._t0 = 0.0
         self._prog_total = 0
@@ -400,6 +402,24 @@ class MainWindow(QMainWindow):
         asrow.addWidget(btn_open_dir)
         ll.addLayout(asrow)
         self._update_autosave_label()
+
+        # tùy chọn xuất kèm phụ đề SRT (cắt dòng ngắn cho khớp phần mềm dựng video)
+        srtrow = QHBoxLayout()
+        srtrow.setSpacing(8)
+        self.srt_cb = QCheckBox("Xuất kèm file phụ đề .SRT")
+        self.srt_cb.setChecked(self.srt_on)
+        self.srt_cb.toggled.connect(self._toggle_srt)
+        self.srt_words_spin = QSpinBox()
+        self.srt_words_spin.setRange(3, 15)
+        self.srt_words_spin.setValue(self.srt_words)
+        self.srt_words_spin.setSuffix(" từ/dòng")
+        self.srt_words_spin.setToolTip("Số từ tối đa mỗi dòng phụ đề (cho khớp phần mềm dựng video)")
+        self.srt_words_spin.valueChanged.connect(self._set_srt_words)
+        srtrow.addWidget(self.srt_cb)
+        srtrow.addWidget(QLabel("·  Mỗi dòng tối đa:"))
+        srtrow.addWidget(self.srt_words_spin)
+        srtrow.addStretch(1)
+        ll.addLayout(srtrow)
 
         # kết quả
         outrow = QHBoxLayout()
@@ -616,6 +636,14 @@ class MainWindow(QMainWindow):
         config.set_setting("autosave_on", self.autosave_on)
         self._update_autosave_label()
 
+    def _toggle_srt(self, on):
+        self.srt_on = bool(on)
+        config.set_setting("srt_on", self.srt_on)
+
+    def _set_srt_words(self, n):
+        self.srt_words = int(n)
+        config.set_setting("srt_words", self.srt_words)
+
     def _pick_autosave_dir(self):
         d = QFileDialog.getExistingDirectory(
             self, "Chọn thư mục tự động lưu audio", self.autosave_dir or "")
@@ -816,7 +844,7 @@ class MainWindow(QMainWindow):
             def job(log=None, progress=None):
                 prompt = self.profiles.load_prompt(name)
                 return self.engine.generate(text, voice_clone_prompt=prompt,
-                                            progress=progress, **common)
+                                            progress=progress, with_segments=True, **common)
         elif mode == 1:
             ra = self.ref_audio_edit.text().strip()
             rt = self.ref_text_edit.toPlainText().strip()
@@ -826,51 +854,73 @@ class MainWindow(QMainWindow):
 
             def job(log=None, progress=None):
                 return self.engine.generate(text, ref_audio=ra, ref_text=rt or None,
-                                            progress=progress, **common)
+                                            progress=progress, with_segments=True, **common)
         else:
             ins = self.instruct_edit.toPlainText().strip()
             self._name_hint = "design"
 
             def job(log=None, progress=None):
                 return self.engine.generate(text, instruct=ins or None,
-                                            progress=progress, **common)
+                                            progress=progress, with_segments=True, **common)
 
         self._run(job, self._on_generated, "Đang tạo giọng nói...", pass_progress=True)
 
     def _on_generated(self, result):
-        sr, audio = result
+        # result = (sr, audio) hoặc (sr, audio, segments) khi xuất SRT
+        if len(result) == 3:
+            sr, audio, segments = result
+        else:
+            sr, audio = result
+            segments = None
         # Lưu thẳng vào thư mục người dùng đã chọn (nếu bật tự động lưu).
         target = self.autosave_dir if self.autosave_on else None
-        self._present_audio(sr, audio, prefix=self._name_hint or "output", target_dir=target)
+        self._present_audio(sr, audio, prefix=self._name_hint or "output",
+                            target_dir=target, segments=segments)
 
-    def _present_audio(self, sr, audio, prefix="output", target_dir=None):
+    def _present_audio(self, sr, audio, prefix="output", target_dir=None, segments=None):
         """Lưu audio (vào target_dir nếu có, không thì outputs), cập nhật UI, tự phát.
 
+        Nếu bật "Xuất SRT" và có segments → ghi kèm file .srt cùng tên với .wav.
         Nếu lưu vào target_dir thất bại (thư mục bị xóa, không có quyền...) thì
         tự động lưu tạm vào user_data/outputs để không mất kết quả.
         """
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        fname = f"{_safe_filename(prefix)}_{ts}.wav"
+        base_name = f"{_safe_filename(prefix)}_{ts}"
         out_dir = target_dir or config.OUTPUTS_DIR
         autosaved = bool(target_dir)
-        out = os.path.join(out_dir, fname)
+        out = os.path.join(out_dir, base_name + ".wav")
         try:
             os.makedirs(out_dir, exist_ok=True)
             sf.write(out, audio, sr)
         except Exception as e:
             # Dự phòng: lưu vào outputs mặc định
-            out = os.path.join(config.OUTPUTS_DIR, fname)
-            os.makedirs(config.OUTPUTS_DIR, exist_ok=True)
+            out_dir = config.OUTPUTS_DIR
+            out = os.path.join(out_dir, base_name + ".wav")
+            os.makedirs(out_dir, exist_ok=True)
             sf.write(out, audio, sr)
             autosaved = False
             self._log(f"⚠ Không lưu được vào thư mục đã chọn ({e}). Đã lưu tạm vào outputs.")
 
+        # Ghi kèm file phụ đề .srt (cùng tên, cùng thư mục)
+        srt_path = None
+        if self.srt_on and segments:
+            try:
+                srt_path = os.path.join(out_dir, base_name + ".srt")
+                with open(srt_path, "w", encoding="utf-8") as f:
+                    f.write(segments_to_srt(segments, max_words=self.srt_words))
+            except Exception as e:
+                srt_path = None
+                self._log(f"⚠ Không ghi được file SRT: {e}")
+
         self._last_output = out
         dur = len(audio) / sr
         tag = "💾 Đã tự động lưu" if autosaved else "✅"
-        self.out_label.setText(f"{tag}: {os.path.basename(out)}   ·   {dur:.1f}s")
+        extra = "  + .srt" if srt_path else ""
+        self.out_label.setText(f"{tag}: {os.path.basename(out)}{extra}   ·   {dur:.1f}s")
         self.out_label.setStyleSheet(f"color: {C_TEXT};")
         self._log(("Đã tự động lưu: " if autosaved else "Đã lưu: ") + out)
+        if srt_path:
+            self._log("Đã xuất phụ đề: " + srt_path)
         for b in (self.btn_play, self.btn_stop, self.btn_saveas):
             b.setEnabled(True)
         self._play()
