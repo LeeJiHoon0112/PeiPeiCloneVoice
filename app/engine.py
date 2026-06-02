@@ -52,46 +52,90 @@ def _split_points(text: str) -> list[int]:
     return sorted(p for p in points if 0 < p < len(text))
 
 
+def _word_chunks(text: str, nparts: int) -> list[str]:
+    """Chia đều text theo TỪ thành nparts mảnh (dự phòng khi không có dấu/liên từ)."""
+    import math
+    words = text.split()
+    if nparts <= 1 or len(words) <= 1:
+        return [text]
+    per = math.ceil(len(words) / nparts)
+    return [" ".join(words[i:i + per]) for i in range(0, len(words), per)]
+
+
+def _balanced_pieces(text: str, max_chars: float) -> list[str]:
+    """Tách text thành các mảnh CÂN ĐỐI, mỗi mảnh ≤ max_chars ký tự.
+
+    Ưu tiên cắt tại dấu phẩy / liên từ; nhắm mỗi mảnh ~ bằng nhau để tránh
+    kiểu 5s + 9s. ĐẢM BẢO không mảnh nào dài quá max_chars (cắt theo từ nếu cần).
+    """
+    import math
+    text = text.strip()
+    total = len(text)
+    if total <= max_chars:
+        return [text]
+
+    nparts = max(2, math.ceil(total / max_chars))
+    target = total / nparts
+
+    # "atom" = các đoạn giữa các điểm tách hợp lý; gom atom thành mảnh cân đối
+    cuts = _split_points(text)
+    bounds = [0] + cuts + [total]
+    atoms = [text[a:b] for a, b in zip(bounds, bounds[1:]) if text[a:b].strip()]
+    if len(atoms) <= 1:
+        atoms = None  # không có điểm tách → để bước sau cắt theo từ
+
+    pieces: list[str] = []
+    if atoms:
+        cur = ""
+        for k, atom in enumerate(atoms):
+            if not cur:
+                cur = atom
+                continue
+            # vượt trần → buộc đóng mảnh
+            if len(cur) + len(atom) > max_chars:
+                pieces.append(cur)
+                cur = atom
+                continue
+            # đã đạt ~target và chưa phải mảnh cuối → đóng để cân đối
+            remaining_atoms = len(atoms) - k
+            if len(cur) >= target and remaining_atoms > 1:
+                pieces.append(cur)
+                cur = atom
+            else:
+                cur += atom
+        if cur.strip():
+            pieces.append(cur)
+        pieces = [p.strip() for p in pieces if p.strip()]
+    else:
+        pieces = [text]
+
+    # An toàn TUYỆT ĐỐI: mảnh nào vẫn > max_chars (vd 1 vế dài, không dấu) → cắt theo từ
+    safe: list[str] = []
+    for p in pieces:
+        if len(p) > max_chars and len(p.split()) > 1:
+            sub = max(2, math.ceil(len(p) / max_chars))
+            safe.extend(_word_chunks(p, sub))
+        else:
+            safe.append(p)
+    return [s.strip() for s in safe if s.strip()] or [text]
+
+
 def _split_long_segment(text, start, end, max_dur):
     """Một câu DÀI hơn max_dur giây → tách tại dấu phẩy / liên từ (theo spec).
 
-    Mỗi mảnh ≤ max_dur. Mốc thời gian chia theo TỈ LỆ số ký tự để khớp audio.
-    Nếu không có điểm tách hợp lý, đành chia đều theo từ (dự phòng).
+    Mỗi mảnh ≤ max_dur (đảm bảo cứng), cân đối nhau, hợp vùng lý tưởng 6–8s.
+    Mốc thời gian chia theo TỈ LỆ số ký tự để khớp audio.
     """
-    import math
     dur = max(0.0, end - start)
     text = text.strip()
     if dur <= max_dur or len(text.split()) <= 1:
         return [{"text": text, "start": start, "end": end}]
 
-    pts = _split_points(text)
-    nparts = max(2, math.ceil(dur / max_dur))
+    # Số ký tự tương ứng max_dur giây (theo tốc độ đọc thật của câu này)
+    cps = len(text) / dur if dur > 0 else len(text)
+    max_chars = max(1.0, max_dur * cps)
 
-    # Chọn (nparts-1) điểm tách gần các vị trí chia đều nhất.
-    pieces_txt = []
-    if pts:
-        targets = [len(text) * k / nparts for k in range(1, nparts)]
-        chosen = []
-        for tg in targets:
-            cand = min(pts, key=lambda p: abs(p - tg))
-            if cand not in chosen:
-                chosen.append(cand)
-        chosen = sorted(set(chosen))
-        prev = 0
-        for c in chosen:
-            seg = text[prev:c].strip()
-            if seg:
-                pieces_txt.append(seg)
-            prev = c
-        tail = text[prev:].strip()
-        if tail:
-            pieces_txt.append(tail)
-
-    # Dự phòng: không tách được tại dấu/liên từ → chia đều theo từ
-    if len(pieces_txt) < 2:
-        words = text.split()
-        per = math.ceil(len(words) / nparts)
-        pieces_txt = [" ".join(words[i:i + per]) for i in range(0, len(words), per)]
+    pieces_txt = _balanced_pieces(text, max_chars)
 
     # Gán mốc thời gian theo tỉ lệ số ký tự
     total_chars = sum(len(p) for p in pieces_txt) or 1
