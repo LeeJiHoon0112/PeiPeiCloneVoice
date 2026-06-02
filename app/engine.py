@@ -25,46 +25,99 @@ def _fmt_srt_time(t: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-def _split_long_segment(text, start, end, max_dur):
-    """Một câu DÀI hơn max_dur giây → tách thành nhiều phần, mỗi phần ≤ max_dur.
+# Liên từ thường dùng làm điểm tách câu dài (Anh + Việt). Tách TRƯỚC từ này.
+_SPLIT_CONJUNCTIONS = [
+    "and", "but", "because", "while", "so", "when", "however",
+    "although", "though", "since", "unless", "whereas", "yet",
+    "và", "nhưng", "vì", "bởi", "nên", "khi", "tuy", "mặc dù",
+    "trong khi", "cho nên", "rồi", "hoặc",
+]
 
-    Chia chữ theo TỈ LỆ số từ để mốc thời gian khớp với audio.
+
+def _split_points(text: str) -> list[int]:
+    """Tìm các vị trí (chỉ số ký tự) tốt để tách 1 câu dài.
+
+    Ưu tiên: sau dấu phẩy/chấm phẩy/gạch ngang → rồi tới trước liên từ.
+    Trả về danh sách vị trí cắt (sau khoảng trắng), đã sắp xếp.
+    """
+    points = set()
+    # 1) sau các dấu ngắt giữa câu
+    for m in re.finditer(r"[,;:—–]\s+", text):
+        points.add(m.end())
+    # 2) trước các liên từ (đứng giữa câu, có khoảng trắng 2 bên)
+    low = text.lower()
+    for conj in _SPLIT_CONJUNCTIONS:
+        for m in re.finditer(r"\s+" + re.escape(conj) + r"\s+", low):
+            points.add(m.start() + 1)  # cắt ngay trước liên từ (giữ liên từ ở vế sau)
+    return sorted(p for p in points if 0 < p < len(text))
+
+
+def _split_long_segment(text, start, end, max_dur):
+    """Một câu DÀI hơn max_dur giây → tách tại dấu phẩy / liên từ (theo spec).
+
+    Mỗi mảnh ≤ max_dur. Mốc thời gian chia theo TỈ LỆ số ký tự để khớp audio.
+    Nếu không có điểm tách hợp lý, đành chia đều theo từ (dự phòng).
     """
     import math
     dur = max(0.0, end - start)
-    words = text.split()
-    if dur <= max_dur or len(words) <= 1:
+    text = text.strip()
+    if dur <= max_dur or len(text.split()) <= 1:
         return [{"text": text, "start": start, "end": end}]
+
+    pts = _split_points(text)
     nparts = max(2, math.ceil(dur / max_dur))
-    per = math.ceil(len(words) / nparts)
-    chunks = [words[i:i + per] for i in range(0, len(words), per)]
-    total = len(words)
+
+    # Chọn (nparts-1) điểm tách gần các vị trí chia đều nhất.
+    pieces_txt = []
+    if pts:
+        targets = [len(text) * k / nparts for k in range(1, nparts)]
+        chosen = []
+        for tg in targets:
+            cand = min(pts, key=lambda p: abs(p - tg))
+            if cand not in chosen:
+                chosen.append(cand)
+        chosen = sorted(set(chosen))
+        prev = 0
+        for c in chosen:
+            seg = text[prev:c].strip()
+            if seg:
+                pieces_txt.append(seg)
+            prev = c
+        tail = text[prev:].strip()
+        if tail:
+            pieces_txt.append(tail)
+
+    # Dự phòng: không tách được tại dấu/liên từ → chia đều theo từ
+    if len(pieces_txt) < 2:
+        words = text.split()
+        per = math.ceil(len(words) / nparts)
+        pieces_txt = [" ".join(words[i:i + per]) for i in range(0, len(words), per)]
+
+    # Gán mốc thời gian theo tỉ lệ số ký tự
+    total_chars = sum(len(p) for p in pieces_txt) or 1
     out = []
     t = start
     cum = 0
-    for k, ch in enumerate(chunks):
-        cum += len(ch)
-        ce = end if k == len(chunks) - 1 else start + dur * cum / total
-        out.append({"text": " ".join(ch), "start": t, "end": ce})
+    for k, p in enumerate(pieces_txt):
+        cum += len(p)
+        ce = end if k == len(pieces_txt) - 1 else start + dur * cum / total_chars
+        out.append({"text": p, "start": t, "end": ce})
         t = ce
     return out
 
 
-def segments_to_srt(segments: list[dict], min_dur: float = 4.0,
-                    max_dur: float = 8.0) -> str:
-    """Dựng nội dung .srt từ danh sách câu [{text,start,end}].
+def segments_to_srt(segments: list[dict], max_dur: float = 10.0,
+                    min_dur: float = 1.5, min_words: int = 4) -> str:
+    """Dựng nội dung .srt theo SPEC: mỗi block = 1 câu/1 ý, ≤ max_dur giây.
 
-    Quy tắc gom phụ đề (theo yêu cầu):
-      - Mỗi đoạn phụ đề là 1 hoặc 2 CÂU.
-      - Không dài quá max_dur giây (mặc định 8s) — ràng buộc cứng.
-      - Cố gắng không ngắn hơn min_dur giây (mặc định 4s): nếu 1 câu ngắn hơn
-        min_dur thì ghép thêm câu kế (tối đa 2 câu) miễn tổng ≤ max_dur.
-      - Câu nào tự nó dài hơn max_dur sẽ được tách nhỏ theo thời gian.
+    Quy tắc:
+      - Mỗi câu là 1 block riêng (KHÔNG gộp 2 câu vào 1 block).
+      - Câu dài hơn max_dur (mặc định 10s) → tách tại dấu phẩy / liên từ.
+      - Block quá ngắn (< min_dur giây HOẶC < min_words từ) → gộp với câu KẾ
+        tiếp, miễn tổng vẫn ≤ max_dur (để không quá vụn).
+      - Số thứ tự liên tục từ 1; thời gian khớp audio thật, không chồng lấn.
     """
-    if max_dur < min_dur:
-        max_dur = min_dur
-
-    # B1: tách các câu quá dài thành đơn vị ≤ max_dur
+    # B1: mỗi câu → 1 hay nhiều đơn vị, mỗi đơn vị ≤ max_dur
     units = []
     for seg in segments:
         text = (seg.get("text") or "").strip()
@@ -74,7 +127,7 @@ def segments_to_srt(segments: list[dict], min_dur: float = 4.0,
             text, float(seg.get("start", 0.0)),
             float(seg.get("end", 0.0)), max_dur))
 
-    # B2: gom 1–2 đơn vị thành một đoạn phụ đề (cue) theo ràng buộc thời gian
+    # B2: gộp đơn vị quá ngắn vào câu kế (chỉ khi tổng ≤ max_dur)
     cues = []
     i = 0
     n = len(units)
@@ -82,19 +135,20 @@ def segments_to_srt(segments: list[dict], min_dur: float = 4.0,
         u = units[i]
         cur = {"text": u["text"], "start": u["start"], "end": u["end"]}
         i += 1
-        # Ghép thêm 1 câu nữa (=> 2 câu) nếu cue đang ngắn hơn min_dur
-        # và tổng vẫn không vượt max_dur.
-        if i < n:
-            nxt = units[i]
+        while i < n:
             cur_len = cur["end"] - cur["start"]
-            combined = nxt["end"] - cur["start"]
-            if cur_len < min_dur and combined <= max_dur:
-                cur["text"] = (cur["text"].rstrip() + " " + nxt["text"].lstrip()).strip()
-                cur["end"] = nxt["end"]
+            cur_words = len(cur["text"].split())
+            too_short = (cur_len < min_dur) or (cur_words < min_words)
+            combined = units[i]["end"] - cur["start"]
+            if too_short and combined <= max_dur:
+                cur["text"] = (cur["text"].rstrip() + " " + units[i]["text"].lstrip()).strip()
+                cur["end"] = units[i]["end"]
                 i += 1
+            else:
+                break
         cues.append(cur)
 
-    # B3: render SRT
+    # B3: render SRT (UTF-8, LF, mili-giây dùng dấu phẩy)
     lines = []
     for idx, c in enumerate(cues, 1):
         lines.append(str(idx))

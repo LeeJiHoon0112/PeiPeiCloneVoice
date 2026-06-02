@@ -188,9 +188,8 @@ class MainWindow(QMainWindow):
         self.autosave_dir = config.get_setting("autosave_dir", config.OUTPUTS_DIR)
         self.autosave_on = bool(config.get_setting("autosave_on", True))
         self.srt_on = bool(config.get_setting("srt_on", True))
-        # Phụ đề: mỗi đoạn 1-2 câu, dài trong khoảng [min, max] giây
-        self.srt_min = float(config.get_setting("srt_min", 4.0))
-        self.srt_max = float(config.get_setting("srt_max", 8.0))
+        # Phụ đề (theo spec): mỗi block = 1 câu/1 ý, tối đa srt_max giây (≤10s).
+        self.srt_max = float(config.get_setting("srt_max", 10.0))
 
         self._t0 = 0.0
         self._prog_total = 0
@@ -405,28 +404,22 @@ class MainWindow(QMainWindow):
         ll.addLayout(asrow)
         self._update_autosave_label()
 
-        # tùy chọn xuất kèm phụ đề SRT (mỗi đoạn 1-2 câu, dài trong khoảng min-max giây)
+        # tùy chọn xuất kèm phụ đề SRT (mỗi block = 1 câu/1 ý, tối đa N giây)
         srtrow = QHBoxLayout()
         srtrow.setSpacing(8)
         self.srt_cb = QCheckBox("Xuất kèm file phụ đề .SRT")
         self.srt_cb.setChecked(self.srt_on)
         self.srt_cb.toggled.connect(self._toggle_srt)
-        self.srt_min_spin = QSpinBox()
-        self.srt_min_spin.setRange(1, 30)
-        self.srt_min_spin.setValue(int(self.srt_min))
-        self.srt_min_spin.setSuffix(" s")
-        self.srt_min_spin.setToolTip("Mỗi đoạn phụ đề CỐ không ngắn hơn số giây này (gộp 2 câu nếu cần)")
         self.srt_max_spin = QSpinBox()
-        self.srt_max_spin.setRange(1, 30)
+        self.srt_max_spin.setRange(3, 15)
         self.srt_max_spin.setValue(int(self.srt_max))
         self.srt_max_spin.setSuffix(" s")
-        self.srt_max_spin.setToolTip("Mỗi đoạn phụ đề KHÔNG dài quá số giây này")
-        self.srt_min_spin.valueChanged.connect(self._set_srt_dur)
+        self.srt_max_spin.setToolTip(
+            "Mỗi block phụ đề = 1 câu/1 ý, KHÔNG dài quá số giây này.\n"
+            "Câu dài hơn sẽ tự tách tại dấu phẩy/liên từ. Khuyên 8–10s.")
         self.srt_max_spin.valueChanged.connect(self._set_srt_dur)
         srtrow.addWidget(self.srt_cb)
-        srtrow.addWidget(QLabel("·  Mỗi đoạn:"))
-        srtrow.addWidget(self.srt_min_spin)
-        srtrow.addWidget(QLabel("→"))
+        srtrow.addWidget(QLabel("·  Mỗi block tối đa:"))
         srtrow.addWidget(self.srt_max_spin)
         srtrow.addStretch(1)
         ll.addLayout(srtrow)
@@ -651,16 +644,8 @@ class MainWindow(QMainWindow):
         config.set_setting("srt_on", self.srt_on)
 
     def _set_srt_dur(self, _=None):
-        mn = float(self.srt_min_spin.value())
-        mx = float(self.srt_max_spin.value())
-        if mx < mn:  # max không được nhỏ hơn min
-            mx = mn
-            self.srt_max_spin.blockSignals(True)
-            self.srt_max_spin.setValue(int(mx))
-            self.srt_max_spin.blockSignals(False)
-        self.srt_min, self.srt_max = mn, mx
-        config.set_setting("srt_min", mn)
-        config.set_setting("srt_max", mx)
+        self.srt_max = float(self.srt_max_spin.value())
+        config.set_setting("srt_max", self.srt_max)
 
     def _pick_autosave_dir(self):
         d = QFileDialog.getExistingDirectory(
@@ -924,9 +909,9 @@ class MainWindow(QMainWindow):
         if self.srt_on and segments:
             try:
                 srt_path = os.path.join(out_dir, base_name + ".srt")
-                with open(srt_path, "w", encoding="utf-8") as f:
-                    f.write(segments_to_srt(segments, min_dur=self.srt_min,
-                                            max_dur=self.srt_max))
+                # UTF-8 KHÔNG BOM, xuống dòng LF (\n) đúng spec.
+                with open(srt_path, "w", encoding="utf-8", newline="\n") as f:
+                    f.write(segments_to_srt(segments, max_dur=self.srt_max))
             except Exception as e:
                 srt_path = None
                 self._log(f"⚠ Không ghi được file SRT: {e}")
