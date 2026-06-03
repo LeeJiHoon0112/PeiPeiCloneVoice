@@ -14,7 +14,7 @@ import time
 import datetime
 
 import soundfile as sf
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QEvent
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QPushButton, QComboBox, QLineEdit, QTextEdit, QPlainTextEdit,
@@ -95,15 +95,15 @@ QComboBox QAbstractItemView {{
     background: transparent; border: none; padding: 0; margin: 0;
     color: #000000; font-size: 14px; font-weight: 700;
 }}
-/* Vùng xổ xuống = 1 NÚT TÍM RÕ (nền tím nhạt, viền trái) để user biết bấm chọn
-   được. KHÔNG override down-arrow → Qt vẽ mũi tên gốc trên nền sáng (render sạch,
-   không thành khối đặc). */
+/* Vùng xổ xuống = 1 NÚT TÍM RÕ (nền tím nhạt, viền trái). Mũi tên ▼ là 1 QLabel
+   riêng (#ModelArrow) đè lên — luôn hiển thị, không bị render lỗi như vẽ CSS. */
 #ModelBox::drop-down {{
     subcontrol-origin: padding; subcontrol-position: top right;
     width: 30px; border-left: 2px solid {C_ACCENT}; background: {C_ACCENT_SOFT};
     border-top-right-radius: 6px; border-bottom-right-radius: 6px;
 }}
 #ModelBox::drop-down:hover {{ background: {C_ACCENT2}; }}
+#ModelArrow {{ color: {C_ACCENT}; font-size: 13px; font-weight: 900; background: transparent; }}
 #ModelBox QAbstractItemView {{
     background: #ffffff; border: 2px solid {C_ACCENT};
     selection-background-color: {C_ACCENT}; selection-color: #ffffff;
@@ -537,6 +537,15 @@ class MainWindow(QMainWindow):
         # editTextChanged bắt cả khi user gõ tay lẫn chọn từ danh sách.
         self.ai_model.editTextChanged.connect(self._set_ai_model)
 
+        # Mũi tên ▼ thật (ký tự Unicode) đè lên vùng tím bên phải ô Model — để user
+        # nhận biết bấm vào chọn được. Dùng label thay vì vẽ CSS (CSS hay render lỗi).
+        self.ai_model_arrow = QLabel("▼", self.ai_model)
+        self.ai_model_arrow.setObjectName("ModelArrow")
+        # Cho click xuyên qua mũi tên xuống combobox (vẫn mở được danh sách).
+        self.ai_model_arrow.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        # Tự canh mũi tên về sát mép phải khi ô đổi kích thước.
+        self.ai_model.installEventFilter(self)
+
         # Nút lấy danh sách model MỚI NHẤT trực tiếp từ API của hãng.
         self.ai_refresh_btn = QPushButton("↻ Cập nhật model")
         self.ai_refresh_btn.setObjectName("ModelBtn")
@@ -918,6 +927,24 @@ class MainWindow(QMainWindow):
 
         self._run(job, done, f"Đang lấy model cho {len(have)} nhà cung cấp...",
                   pass_log=True)
+
+    def eventFilter(self, obj, event):
+        """Canh mũi tên ▼ về sát mép phải ô Model mỗi khi nó đổi kích thước/hiện."""
+        if obj is getattr(self, "ai_model", None) and event.type() in (
+                QEvent.Resize, QEvent.Show, QEvent.Move):
+            self._place_model_arrow()
+        return super().eventFilter(obj, event)
+
+    def _place_model_arrow(self):
+        """Đặt label ▼ vào giữa vùng tím (30px) bên phải ô Model."""
+        a = getattr(self, "ai_model_arrow", None)
+        if not a:
+            return
+        h = self.ai_model.height()
+        a.setFixedSize(30, h - 6)
+        a.setAlignment(Qt.AlignCenter)
+        a.move(self.ai_model.width() - 30, 3)
+        a.raise_()
 
     def _cur_ai_model(self) -> str:
         """Tên model đang chọn (rỗng → để scene_ai dùng mặc định)."""
