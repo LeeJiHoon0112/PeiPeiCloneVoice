@@ -82,6 +82,27 @@ QComboBox QAbstractItemView {{
     outline: none; padding: 4px;
 }}
 
+/* ---- Ô chọn Model (nổi bật, chữ đen đậm dễ nhìn) ---- */
+#ModelLabel {{ color: #000000; font-size: 13px; font-weight: 800; }}
+#ModelBox {{
+    background: #ffffff; border: 2px solid {C_ACCENT}; border-radius: 8px;
+    padding: 7px 12px; color: #000000; font-size: 14px; font-weight: 700;
+}}
+#ModelBox:hover {{ border: 2px solid {C_ACCENT2}; }}
+#ModelBox:focus {{ border: 2px solid {C_ACCENT}; background: #ffffff; }}
+#ModelBox QLineEdit {{
+    background: transparent; border: none; padding: 0;
+    color: #000000; font-size: 14px; font-weight: 700;
+}}
+#ModelBox::drop-down {{ border: none; width: 30px; }}
+#ModelBox::down-arrow {{ width: 12px; height: 12px; }}
+#ModelBox QAbstractItemView {{
+    background: #ffffff; border: 2px solid {C_ACCENT};
+    selection-background-color: {C_ACCENT}; selection-color: #ffffff;
+    color: #000000; font-size: 14px; outline: none; padding: 4px;
+}}
+#ModelBox QAbstractItemView::item {{ min-height: 28px; padding: 4px 8px; color: #000000; }}
+
 /* ---- Nút ---- */
 QPushButton {{
     background: #ffffff; border: 1px solid {C_BORDER2}; border-radius: 8px;
@@ -486,10 +507,12 @@ class MainWindow(QMainWindow):
         self.ai_provider.setToolTip("Chọn nhà cung cấp API tương ứng với key bạn có.")
         self.ai_provider.currentIndexChanged.connect(self._on_ai_provider)
 
-        # Ô chọn model (editable — user gõ tên khác cũng được).
+        # Ô chọn model (editable — user gõ tên khác cũng được). Style nổi bật để dễ nhìn.
         self.ai_model = QComboBox()
+        self.ai_model.setObjectName("ModelBox")
         self.ai_model.setEditable(True)
-        self.ai_model.setMinimumWidth(180)
+        self.ai_model.setMinimumWidth(240)
+        self.ai_model.setMinimumHeight(38)
         self.ai_model.setToolTip("Chọn hoặc gõ tên model. Mục đầu là mặc định (rẻ, nhanh).")
         # editTextChanged bắt cả khi user gõ tay lẫn chọn từ danh sách.
         self.ai_model.editTextChanged.connect(self._set_ai_model)
@@ -499,12 +522,14 @@ class MainWindow(QMainWindow):
         self.ai_refresh_btn.setObjectName("Ghost")
         self.ai_refresh_btn.setCursor(Qt.PointingHandCursor)
         self.ai_refresh_btn.setToolTip(
-            "Lấy model mới nhất từ API cho CẢ 3 loại đã lưu key (mỗi loại 3 model mới nhất).")
+            "Lấy model mới nhất từ API cho CẢ 3 loại đã lưu key.")
         self.ai_refresh_btn.clicked.connect(self._refresh_ai_models_live)
 
         airow.addWidget(self.ai_cb)
         airow.addWidget(self.ai_provider)
-        airow.addWidget(QLabel("Model:"))
+        model_lbl = QLabel("Model:")
+        model_lbl.setObjectName("ModelLabel")
+        airow.addWidget(model_lbl)
         airow.addWidget(self.ai_model, 1)
         airow.addWidget(self.ai_refresh_btn)
         ll.addLayout(airow)
