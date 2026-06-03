@@ -94,14 +94,35 @@ QComboBox QAbstractItemView {{
     background: transparent; border: none; padding: 0;
     color: #000000; font-size: 14px; font-weight: 700;
 }}
-#ModelBox::drop-down {{ border: none; width: 30px; }}
-#ModelBox::down-arrow {{ width: 12px; height: 12px; }}
+/* Vùng nút xổ xuống: nền tím nhạt + viền để user thấy rõ là bấm đổi được */
+#ModelBox::drop-down {{
+    subcontrol-origin: padding; subcontrol-position: top right; width: 32px;
+    border-left: 2px solid {C_ACCENT}; background: {C_ACCENT_SOFT};
+    border-top-right-radius: 6px; border-bottom-right-radius: 6px;
+}}
+#ModelBox::drop-down:hover {{ background: {C_ACCENT}; }}
+#ModelBox::down-arrow {{
+    width: 0; height: 0;
+    border-left: 6px solid transparent; border-right: 6px solid transparent;
+    border-top: 7px solid {C_ACCENT};
+}}
+#ModelBox::down-arrow:hover {{ border-top: 7px solid #ffffff; }}
 #ModelBox QAbstractItemView {{
     background: #ffffff; border: 2px solid {C_ACCENT};
     selection-background-color: {C_ACCENT}; selection-color: #ffffff;
     color: #000000; font-size: 14px; outline: none; padding: 4px;
 }}
 #ModelBox QAbstractItemView::item {{ min-height: 28px; padding: 4px 8px; color: #000000; }}
+
+/* Nút 'Cập nhật model' — khung rõ ràng, màu nhấn để dễ nhận biết */
+QPushButton#ModelBtn {{
+    background: {C_ACCENT_SOFT}; border: 2px solid {C_ACCENT}; border-radius: 8px;
+    padding: 7px 14px; color: {C_ACCENT}; font-weight: 700;
+}}
+QPushButton#ModelBtn:hover {{ background: {C_ACCENT}; color: #ffffff; }}
+QPushButton#ModelBtn:disabled {{
+    background: {C_CARD2}; border-color: {C_BORDER}; color: #b3b8c4;
+}}
 
 /* ---- Nút ---- */
 QPushButton {{
@@ -519,7 +540,7 @@ class MainWindow(QMainWindow):
 
         # Nút lấy danh sách model MỚI NHẤT trực tiếp từ API của hãng.
         self.ai_refresh_btn = QPushButton("↻ Cập nhật model")
-        self.ai_refresh_btn.setObjectName("Ghost")
+        self.ai_refresh_btn.setObjectName("ModelBtn")
         self.ai_refresh_btn.setCursor(Qt.PointingHandCursor)
         self.ai_refresh_btn.setToolTip(
             "Lấy model mới nhất từ API cho CẢ 3 loại đã lưu key.")
