@@ -205,7 +205,12 @@ class MainWindow(QMainWindow):
         # API key lưu trong user_data/settings.json (đã gitignore — không lên GitHub).
         self.srt_ai_on = bool(config.get_setting("srt_ai_on", False))
         self.srt_ai_provider = str(config.get_setting("srt_ai_provider", "gemini"))
-        self.srt_ai_key = str(config.get_setting("srt_ai_key", ""))
+        # Lưu key RIÊNG cho từng provider {provider: key} → giữ cả 3 loại cùng lúc.
+        self.srt_ai_keys = dict(config.get_setting("srt_ai_keys", {}) or {})
+        # Tương thích bản cũ (chỉ có 1 key chung srt_ai_key) → đổ vào provider cũ.
+        _old_key = str(config.get_setting("srt_ai_key", ""))
+        if _old_key and not self.srt_ai_keys.get(self.srt_ai_provider):
+            self.srt_ai_keys[self.srt_ai_provider] = _old_key
         # Model chọn riêng cho từng provider (dict {provider: model}); trống = mặc định.
         self.srt_ai_models = dict(config.get_setting("srt_ai_models", {}) or {})
         # Danh sách model lấy LIVE từ API, cache theo provider {provider: [model,...]}.
@@ -490,11 +495,11 @@ class MainWindow(QMainWindow):
         self.ai_model.editTextChanged.connect(self._set_ai_model)
 
         # Nút lấy danh sách model MỚI NHẤT trực tiếp từ API của hãng.
-        self.ai_refresh_btn = QPushButton("↻")
+        self.ai_refresh_btn = QPushButton("↻ Cập nhật model")
         self.ai_refresh_btn.setObjectName("Ghost")
-        self.ai_refresh_btn.setFixedWidth(40)
         self.ai_refresh_btn.setCursor(Qt.PointingHandCursor)
-        self.ai_refresh_btn.setToolTip("Cập nhật danh sách model mới nhất từ API (cần API key).")
+        self.ai_refresh_btn.setToolTip(
+            "Lấy model mới nhất từ API cho CẢ 3 loại đã lưu key (mỗi loại 3 model mới nhất).")
         self.ai_refresh_btn.clicked.connect(self._refresh_ai_models_live)
 
         airow.addWidget(self.ai_cb)
@@ -504,22 +509,28 @@ class MainWindow(QMainWindow):
         airow.addWidget(self.ai_refresh_btn)
         ll.addLayout(airow)
 
-        # Hàng key + nút Test kết nối
+        # Hàng key + nút Lưu key + nút Test kết nối
         airow2 = QHBoxLayout()
         airow2.setSpacing(8)
         self.ai_key_edit = QLineEdit()
-        self.ai_key_edit.setText(self.srt_ai_key)
+        self.ai_key_edit.setText(self._cur_ai_key())
         self.ai_key_edit.setEchoMode(QLineEdit.Password)
-        self.ai_key_edit.setPlaceholderText("Dán API key...")
+        self.ai_key_edit.setPlaceholderText("Dán API key của nhà cung cấp đang chọn...")
         self.ai_key_edit.setToolTip(
-            "API key được lưu cục bộ trong user_data (không đẩy lên GitHub).")
-        self.ai_key_edit.editingFinished.connect(self._set_ai_key)
-        self.ai_test_btn = QPushButton("🔌 Test kết nối")
+            "Key lưu RIÊNG cho từng nhà cung cấp (giữ cả 3 loại). "
+            "Lưu cục bộ trong user_data (không đẩy lên GitHub).")
+        self.ai_save_key_btn = QPushButton("💾 Lưu key")
+        self.ai_save_key_btn.setObjectName("Ghost")
+        self.ai_save_key_btn.setCursor(Qt.PointingHandCursor)
+        self.ai_save_key_btn.setToolTip("Lưu API key cho nhà cung cấp đang chọn.")
+        self.ai_save_key_btn.clicked.connect(self._save_ai_key)
+        self.ai_test_btn = QPushButton("🔌 Test")
         self.ai_test_btn.setObjectName("Ghost")
         self.ai_test_btn.setCursor(Qt.PointingHandCursor)
         self.ai_test_btn.clicked.connect(self._test_ai)
         airow2.addWidget(QLabel("API key:"))
         airow2.addWidget(self.ai_key_edit, 1)
+        airow2.addWidget(self.ai_save_key_btn)
         airow2.addWidget(self.ai_test_btn)
         ll.addLayout(airow2)
 
@@ -760,6 +771,7 @@ class MainWindow(QMainWindow):
             self.ai_model.setEnabled(ai)
             self.ai_refresh_btn.setEnabled(ai)
             self.ai_key_edit.setEnabled(ai)
+            self.ai_save_key_btn.setEnabled(ai)
             self.ai_test_btn.setEnabled(ai)
 
     def _toggle_ai(self, on):
@@ -767,11 +779,20 @@ class MainWindow(QMainWindow):
         config.set_setting("srt_ai_on", self.srt_ai_on)
         self._update_srt_enabled()
 
+    def _cur_ai_key(self) -> str:
+        """Key của nhà cung cấp đang chọn (lưu riêng từng loại)."""
+        return (self.srt_ai_keys.get(self.srt_ai_provider) or "").strip()
+
     def _on_ai_provider(self, _=None):
-        """Đổi nhà cung cấp → lưu + nạp lại danh sách model của hãng đó."""
+        """Đổi nhà cung cấp → nạp lại model + hiện key đã lưu của hãng đó."""
         self.srt_ai_provider = self.ai_provider.currentData() or "gemini"
         config.set_setting("srt_ai_provider", self.srt_ai_provider)
         self._reload_ai_models()
+        # Hiện key đã lưu của provider mới vào ô nhập.
+        if hasattr(self, "ai_key_edit"):
+            self.ai_key_edit.blockSignals(True)
+            self.ai_key_edit.setText(self._cur_ai_key())
+            self.ai_key_edit.blockSignals(False)
 
     def _reload_ai_models(self, initial=False):
         """Nạp danh sách model cho provider đang chọn; chọn model đã nhớ (nếu có).
@@ -791,52 +812,63 @@ class MainWindow(QMainWindow):
             self._set_ai_model()
 
     def _refresh_ai_models_live(self):
-        """Bấm ↻: gọi API lấy danh sách model mới nhất (luồng nền), cache lại."""
-        provider = self.srt_ai_provider
-        key = self.ai_key_edit.text().strip()
-        if not key:
-            return self._error("Hãy nhập API key trước khi cập nhật model.")
-        self._set_ai_key()
-        self.ai_refresh_btn.setEnabled(False)
-        self.ai_refresh_btn.setText("⏳")
+        """Bấm ↻: quét TẤT CẢ nhà cung cấp đã lưu key, lấy 3 MODEL MỚI NHẤT mỗi
+        loại (luồng nền), cache lại. Loại nào chưa có key thì bỏ qua."""
+        # Lưu key đang gõ (nếu có) trước khi quét.
+        self._save_ai_key(silent=True)
+        keys = {p: (self.srt_ai_keys.get(p) or "").strip() for p in scene_ai.PROVIDERS}
+        have = {p: k for p, k in keys.items() if k}
+        if not have:
+            return self._error("Chưa lưu API key nào. Hãy nhập key và bấm 💾 Lưu key.")
 
-        # Job tự bắt lỗi → luôn trả (ok, data) để done() chạy & nút được reset.
+        self.ai_refresh_btn.setEnabled(False)
+        self.ai_refresh_btn.setText("⏳ Đang lấy...")
+
+        TOP_N = 3  # mỗi loại giữ 3 model mới nhất
+
+        # Job tự bắt lỗi từng provider → trả dict {provider: (ok, data)}.
         def job(log=None):
-            try:
-                return True, scene_ai.list_models(provider, key)
-            except Exception as e:
-                return False, scene_ai._friendly_error(e, provider, "")
+            out = {}
+            for p, k in have.items():
+                try:
+                    models = scene_ai.list_models(p, k)
+                    out[p] = (True, models[:TOP_N])
+                    log(f"{p}: lấy được {len(models)} model.")
+                except Exception as e:
+                    out[p] = (False, scene_ai._friendly_error(e, p, ""))
+                    log(f"{p}: lỗi — {out[p][1]}")
+            return out
 
         def done(result):
             self.ai_refresh_btn.setEnabled(True)
-            self.ai_refresh_btn.setText("↻")
-            ok, data = result
-            if not ok:
-                self._log(f"❌ Cập nhật model lỗi: {data}")
-                QMessageBox.warning(self, "Cập nhật model thất bại", str(data))
-                return
-            models = data
-            if not models:
-                self._log(f"⚠ API {provider} không trả model nào.")
-                QMessageBox.warning(self, "Cập nhật model",
-                                    "Không lấy được model nào từ API.")
-                return
-            # Cache + giữ lựa chọn hiện tại nếu vẫn còn trong danh sách mới.
-            cur = self._cur_ai_model()
-            self.srt_ai_model_lists[provider] = models
-            config.set_setting("srt_ai_model_lists", self.srt_ai_model_lists)
-            self.ai_model.blockSignals(True)
-            self.ai_model.clear()
-            self.ai_model.addItems(models)
-            self.ai_model.setCurrentText(cur if cur in models else models[0])
-            self.ai_model.blockSignals(False)
-            self._set_ai_model()
-            self._log(f"✅ Đã cập nhật {len(models)} model cho {provider}.")
-            QMessageBox.information(
-                self, "Cập nhật model",
-                f"Đã lấy {len(models)} model mới nhất từ {provider}.")
+            self.ai_refresh_btn.setText("↻ Cập nhật model")
+            lines, any_ok = [], False
+            for p in scene_ai.PROVIDERS:
+                if p not in result:
+                    continue
+                ok, data = result[p]
+                if ok and data:
+                    self.srt_ai_model_lists[p] = data
+                    any_ok = True
+                    lines.append(f"✅ {p}: {', '.join(data)}")
+                elif ok:
+                    lines.append(f"⚠ {p}: API không trả model nào.")
+                else:
+                    lines.append(f"❌ {p}: {data}")
+            if any_ok:
+                config.set_setting("srt_ai_model_lists", self.srt_ai_model_lists)
+                # Nạp lại combo cho provider đang chọn (giữ model đang chọn nếu còn).
+                cur = self._cur_ai_model()
+                self._reload_ai_models(initial=True)
+                if cur:
+                    self.ai_model.setCurrentText(cur)
+            for ln in lines:
+                self._log(ln)
+            QMessageBox.information(self, "Cập nhật model (3 mới nhất mỗi loại)",
+                                   "\n".join(lines) or "Không có gì để cập nhật.")
 
-        self._run(job, done, f"Đang lấy danh sách model {provider}...")
+        self._run(job, done, f"Đang lấy model cho {len(have)} nhà cung cấp...",
+                  pass_log=True)
 
     def _cur_ai_model(self) -> str:
         """Tên model đang chọn (rỗng → để scene_ai dùng mặc định)."""
@@ -850,22 +882,27 @@ class MainWindow(QMainWindow):
         # Giữ tương thích (không còn nối trực tiếp; _on_ai_provider thay thế).
         self._on_ai_provider()
 
-    def _set_ai_key(self):
-        self.srt_ai_key = self.ai_key_edit.text().strip()
-        config.set_setting("srt_ai_key", self.srt_ai_key)
+    def _save_ai_key(self, silent=False):
+        """Lưu API key cho nhà cung cấp ĐANG CHỌN (mỗi loại 1 key riêng)."""
+        key = self.ai_key_edit.text().strip()
+        self.srt_ai_keys[self.srt_ai_provider] = key
+        config.set_setting("srt_ai_keys", self.srt_ai_keys)
+        if not silent:
+            n = sum(1 for v in self.srt_ai_keys.values() if v)
+            self._log(f"💾 Đã lưu API key cho {self.srt_ai_provider} (tổng {n} key đã lưu).")
 
     def _test_ai(self):
-        """Bấm 'Test kết nối': gọi API tí hon ở luồng nền, báo OK/lỗi."""
+        """Bấm 'Test': gọi API tí hon ở luồng nền, báo OK/lỗi."""
         provider = self.srt_ai_provider
         key = self.ai_key_edit.text().strip()
         model = self._cur_ai_model()
         if not key:
             return self._error("Hãy nhập API key trước khi test.")
         # Lưu key/model hiện tại để lần sau dùng luôn.
-        self._set_ai_key()
+        self._save_ai_key(silent=True)
         self._set_ai_model()
         self.ai_test_btn.setEnabled(False)
-        self.ai_test_btn.setText("⏳ Đang test...")
+        self.ai_test_btn.setText("⏳")
 
         def job(log=None):
             return scene_ai.test_connection(provider, key, model)
@@ -873,7 +910,7 @@ class MainWindow(QMainWindow):
         def done(result):
             ok, msg = result
             self.ai_test_btn.setEnabled(True)
-            self.ai_test_btn.setText("🔌 Test kết nối")
+            self.ai_test_btn.setText("🔌 Test")
             self._log(("✅ " if ok else "❌ ") + msg)
             if ok:
                 QMessageBox.information(self, "Test kết nối", msg)
@@ -1107,7 +1144,7 @@ class MainWindow(QMainWindow):
             "max": self._cur_srt_max(),
             "ai_on": self.srt_ai_on,
             "provider": self.srt_ai_provider,
-            "key": self.srt_ai_key,
+            "key": self._cur_ai_key(),
             "model": self._cur_ai_model(),
         }
 
