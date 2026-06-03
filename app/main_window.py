@@ -812,8 +812,9 @@ class MainWindow(QMainWindow):
             self._set_ai_model()
 
     def _refresh_ai_models_live(self):
-        """Bấm ↻: quét TẤT CẢ nhà cung cấp đã lưu key, lấy 3 MODEL MỚI NHẤT mỗi
-        loại (luồng nền), cache lại. Loại nào chưa có key thì bỏ qua."""
+        """Bấm ↻: quét TẤT CẢ nhà cung cấp đã lưu key, lấy TOÀN BỘ model dùng được
+        (đã lọc sạch) mỗi loại (luồng nền), cache lại để user tự chọn. Loại nào
+        chưa có key thì bỏ qua."""
         # Lưu key đang gõ (nếu có) trước khi quét.
         self._save_ai_key(silent=True)
         keys = {p: (self.srt_ai_keys.get(p) or "").strip() for p in scene_ai.PROVIDERS}
@@ -824,15 +825,13 @@ class MainWindow(QMainWindow):
         self.ai_refresh_btn.setEnabled(False)
         self.ai_refresh_btn.setText("⏳ Đang lấy...")
 
-        TOP_N = 3  # mỗi loại giữ 3 model mới nhất
-
         # Job tự bắt lỗi từng provider → trả dict {provider: (ok, data)}.
         def job(log=None):
             out = {}
             for p, k in have.items():
                 try:
                     models = scene_ai.list_models(p, k)
-                    out[p] = (True, models[:TOP_N])
+                    out[p] = (True, models)
                     log(f"{p}: lấy được {len(models)} model.")
                 except Exception as e:
                     out[p] = (False, scene_ai._friendly_error(e, p, ""))
@@ -850,7 +849,10 @@ class MainWindow(QMainWindow):
                 if ok and data:
                     self.srt_ai_model_lists[p] = data
                     any_ok = True
-                    lines.append(f"✅ {p}: {', '.join(data)}")
+                    # Hiện vài model đầu cho gọn, kèm tổng số.
+                    head = ", ".join(data[:3])
+                    more = f" … (+{len(data) - 3})" if len(data) > 3 else ""
+                    lines.append(f"✅ {p}: {len(data)} model — {head}{more}")
                 elif ok:
                     lines.append(f"⚠ {p}: API không trả model nào.")
                 else:
@@ -864,7 +866,7 @@ class MainWindow(QMainWindow):
                     self.ai_model.setCurrentText(cur)
             for ln in lines:
                 self._log(ln)
-            QMessageBox.information(self, "Cập nhật model (3 mới nhất mỗi loại)",
+            QMessageBox.information(self, "Cập nhật model",
                                    "\n".join(lines) or "Không có gì để cập nhật.")
 
         self._run(job, done, f"Đang lấy model cho {len(have)} nhà cung cấp...",

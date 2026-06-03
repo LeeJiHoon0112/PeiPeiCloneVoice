@@ -229,28 +229,69 @@ _LIST_DISPATCH = {"gemini": _list_gemini, "openai": _list_openai,
                   "claude": _list_claude}
 
 # Lọc bỏ các model KHÔNG hợp cho việc sinh văn bản (chia cảnh) — đỡ rối danh sách.
-_OPENAI_SKIP = ("embedding", "whisper", "tts", "dall-e", "audio", "realtime",
-                "image", "moderation", "transcribe", "search", "computer-use")
+# Áp dụng cho MỌI hãng: bỏ các dòng chuyên audio/ảnh/embedding/robot/preview...
+_SKIP_ANY = ("embedding", "whisper", "tts", "dall-e", "audio", "realtime",
+             "image", "imagen", "moderation", "transcribe", "search",
+             "computer-use", "robotics", "vision", "veo", "live", "guard",
+             "aqa", "gemma", "learnlm", "codey", "rerank")
 
 
 def _is_text_model(provider: str, name: str) -> bool:
     low = name.lower()
+    if any(k in low for k in _SKIP_ANY):
+        return False
     if provider == "openai":
         # Giữ dòng GPT (gpt-4/4o/4.1/5/5.4...) và dòng reasoning o-series (o1/o3/o4...).
-        is_chat = low.startswith("gpt") or re.match(r"^o\d", low)
-        if not is_chat:
-            return False
-        return not any(k in low for k in _OPENAI_SKIP)
+        return bool(low.startswith("gpt") or re.match(r"^o\d", low))
     if provider == "gemini":
-        # Bỏ embedding/aqa/imagen/tts...
-        return low.startswith("gemini") and "embedding" not in low
+        return low.startswith("gemini")
     return True  # claude: API chỉ trả model chat
 
 
+def _model_sort_key(provider: str, name: str):
+    """Khóa sắp xếp: ưu tiên model CHÍNH & MỚI lên đầu.
+    Trả (–điểm_ưu_tiên, –phiên_bản, tên) để sort tăng dần = tốt/mới ở trên."""
+    low = name.lower()
+    # Lấy 2 số phiên bản đầu để so sánh (vd 'gpt-5.4'→(5,4), 'claude-opus-4-8'→(4,8),
+    # 'gemini-2.5-pro'→(2,5)). Số thứ 2 phân biệt opus-4-8 > opus-4-6.
+    nums = re.findall(r"\d+", low.split("-2025")[0].split("2024")[0])
+    ver = float(nums[0]) if nums else 0.0
+    ver2 = float(nums[1]) if len(nums) > 1 else 0.0
+    # Điểm ưu tiên theo họ model "xịn" + bớt điểm các bản preview/cũ/snapshot ngày.
+    pri = 0
+    if provider == "openai":
+        if low.startswith("gpt"):
+            pri += 10
+        if re.match(r"^o\d", low):
+            pri += 6
+    elif provider == "gemini":
+        if "pro" in low:
+            pri += 6
+        if "flash" in low:
+            pri += 5
+        if "latest" in low:
+            pri += 2
+    elif provider == "claude":
+        if "opus" in low:
+            pri += 7
+        if "sonnet" in low:
+            pri += 6
+        if "haiku" in low:
+            pri += 5
+        if "latest" in low:
+            pri += 2
+    if "preview" in low or "exp" in low or "beta" in low:
+        pri -= 4
+    # Bản gắn ngày (snapshot, vd -20250101 hoặc -2025-01-01) xếp sau bản 'latest'.
+    if re.search(r"\d{4}-?\d{2}-?\d{2}", low):
+        pri -= 1
+    return (-pri, -ver, -ver2, low)
+
+
 def list_models(provider: str, api_key: str) -> list[str]:
-    """Lấy DANH SÁCH MODEL MỚI NHẤT trực tiếp từ API của hãng (theo tài khoản của
-    key). Lọc về các model dùng được cho chia cảnh, sắp xếp mới→cũ (đảo bảng chữ).
-    Ném exception nếu lỗi (để UI báo)."""
+    """Lấy TOÀN BỘ model dùng được cho chia cảnh, trực tiếp từ API (theo tài khoản
+    của key). Đã lọc bỏ model audio/ảnh/embedding/robot... và sắp xếp model chính &
+    mới lên đầu để user dễ chọn. Ném exception nếu lỗi (để UI báo)."""
     provider = (provider or "").lower().strip()
     if provider not in _LIST_DISPATCH:
         raise ValueError(f"Nhà cung cấp không hỗ trợ: {provider!r}")
@@ -262,8 +303,7 @@ def list_models(provider: str, api_key: str) -> list[str]:
         if name and name not in seen and _is_text_model(provider, name):
             seen.add(name)
             out.append(name)
-    # Sắp xếp giảm dần để model mới (số phiên bản cao) lên trên cho dễ chọn.
-    out.sort(reverse=True)
+    out.sort(key=lambda n: _model_sort_key(provider, n))
     return out
 
 
