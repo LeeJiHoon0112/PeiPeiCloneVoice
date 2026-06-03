@@ -95,15 +95,11 @@ QComboBox QAbstractItemView {{
     background: transparent; border: none; padding: 0; margin: 0;
     color: #000000; font-size: 14px; font-weight: 700;
 }}
-/* Nút xổ xuống: tách hẳn bên phải, KHÔNG bo góc/viền để khỏi đè viền ô chính */
+/* Nút xổ xuống: chỉ định vùng + KHÔNG override down-arrow → Qt vẽ mũi tên gốc
+   (luôn sạch, không bị render thành khối đặc như khi tự vẽ bằng CSS). */
 #ModelBox::drop-down {{
     subcontrol-origin: padding; subcontrol-position: center right;
-    width: 34px; margin: 0; border: none; background: transparent;
-}}
-#ModelBox::down-arrow {{
-    image: none; width: 0; height: 0;
-    border-left: 6px solid transparent; border-right: 6px solid transparent;
-    border-top: 8px solid {C_ACCENT}; margin-right: 12px;
+    width: 28px; margin-right: 4px; border: none; background: transparent;
 }}
 #ModelBox QAbstractItemView {{
     background: #ffffff; border: 2px solid {C_ACCENT};
@@ -530,7 +526,9 @@ class MainWindow(QMainWindow):
         self.ai_model = QComboBox()
         self.ai_model.setObjectName("ModelBox")
         self.ai_model.setEditable(True)
-        self.ai_model.setMinimumWidth(240)
+        # min vừa phải để hàng co giãn được (tránh đè nút bên cạnh khi panel hẹp);
+        # stretch=1 ở addWidget sẽ cho nó giãn rộng khi còn chỗ.
+        self.ai_model.setMinimumWidth(130)
         self.ai_model.setMinimumHeight(38)
         self.ai_model.setToolTip("Chọn hoặc gõ tên model. Mục đầu là mặc định (rẻ, nhanh).")
         # editTextChanged bắt cả khi user gõ tay lẫn chọn từ danh sách.
