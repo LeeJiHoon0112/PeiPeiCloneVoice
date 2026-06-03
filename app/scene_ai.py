@@ -164,6 +164,104 @@ def _call_claude(api_key: str, model: str, prompt: str) -> str:
 _DISPATCH = {"gemini": _call_gemini, "openai": _call_openai, "claude": _call_claude}
 
 
+# ----------------------------------------------- LẤY DANH SÁCH MODEL (LIVE) từ API
+def _list_gemini(api_key: str) -> list[str]:
+    import requests
+    url = "https://generativelanguage.googleapis.com/v1beta/models"
+    out, page = [], None
+    for _ in range(10):  # phòng phân trang, tối đa 10 trang
+        params = {"key": api_key, "pageSize": 200}
+        if page:
+            params["pageToken"] = page
+        r = requests.get(url, params=params, timeout=_TIMEOUT)
+        r.raise_for_status()
+        data = r.json()
+        for m in data.get("models", []):
+            # Chỉ lấy model hỗ trợ sinh nội dung (generateContent).
+            methods = m.get("supportedGenerationMethods", [])
+            if "generateContent" not in methods:
+                continue
+            name = (m.get("name") or "").split("/")[-1]  # "models/xxx" → "xxx"
+            if name:
+                out.append(name)
+        page = data.get("nextPageToken")
+        if not page:
+            break
+    return out
+
+
+def _list_openai(api_key: str) -> list[str]:
+    import requests
+    url = "https://api.openai.com/v1/models"
+    r = requests.get(url, headers={"Authorization": f"Bearer {api_key}"},
+                     timeout=_TIMEOUT)
+    r.raise_for_status()
+    return [m.get("id", "") for m in r.json().get("data", []) if m.get("id")]
+
+
+def _list_claude(api_key: str) -> list[str]:
+    import requests
+    url = "https://api.anthropic.com/v1/models"
+    headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
+    out, page = [], None
+    for _ in range(10):
+        params = {"limit": 200}
+        if page:
+            params["after_id"] = page
+        r = requests.get(url, headers=headers, params=params, timeout=_TIMEOUT)
+        r.raise_for_status()
+        data = r.json()
+        for m in data.get("data", []):
+            mid = m.get("id", "")
+            if mid:
+                out.append(mid)
+        if data.get("has_more") and data.get("last_id"):
+            page = data["last_id"]
+        else:
+            break
+    return out
+
+
+_LIST_DISPATCH = {"gemini": _list_gemini, "openai": _list_openai,
+                  "claude": _list_claude}
+
+# Lọc bỏ các model KHÔNG hợp cho việc sinh văn bản (chia cảnh) — đỡ rối danh sách.
+_OPENAI_SKIP = ("embedding", "whisper", "tts", "dall-e", "audio", "realtime",
+                "image", "moderation", "transcribe", "search", "computer-use")
+
+
+def _is_text_model(provider: str, name: str) -> bool:
+    low = name.lower()
+    if provider == "openai":
+        if not low.startswith("gpt"):
+            return False
+        return not any(k in low for k in _OPENAI_SKIP)
+    if provider == "gemini":
+        # Bỏ embedding/aqa/imagen/tts...
+        return low.startswith("gemini") and "embedding" not in low
+    return True  # claude: API chỉ trả model chat
+
+
+def list_models(provider: str, api_key: str) -> list[str]:
+    """Lấy DANH SÁCH MODEL MỚI NHẤT trực tiếp từ API của hãng (theo tài khoản của
+    key). Lọc về các model dùng được cho chia cảnh, sắp xếp mới→cũ (đảo bảng chữ).
+    Ném exception nếu lỗi (để UI báo)."""
+    provider = (provider or "").lower().strip()
+    if provider not in _LIST_DISPATCH:
+        raise ValueError(f"Nhà cung cấp không hỗ trợ: {provider!r}")
+    if not api_key or not api_key.strip():
+        raise ValueError("Chưa nhập API key.")
+    raw = _LIST_DISPATCH[provider](api_key.strip())
+    seen, out = set(), []
+    for name in raw:
+        if name and name not in seen and _is_text_model(provider, name):
+            seen.add(name)
+            out.append(name)
+    # Sắp xếp giảm dần để model mới (số phiên bản cao) lên trên cho dễ chọn.
+    out.sort(reverse=True)
+    return out
+
+
 def suggest_groups(segments: list[dict], provider: str, api_key: str,
                    target_dur: float, min_dur: float, max_dur: float,
                    kind: str = "image", model: str | None = None) -> list[list[int]]:

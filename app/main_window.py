@@ -208,6 +208,9 @@ class MainWindow(QMainWindow):
         self.srt_ai_key = str(config.get_setting("srt_ai_key", ""))
         # Model chọn riêng cho từng provider (dict {provider: model}); trống = mặc định.
         self.srt_ai_models = dict(config.get_setting("srt_ai_models", {}) or {})
+        # Danh sách model lấy LIVE từ API, cache theo provider {provider: [model,...]}.
+        # Nếu có → dùng thay danh sách cứng trong scene_ai.MODELS.
+        self.srt_ai_model_lists = dict(config.get_setting("srt_ai_model_lists", {}) or {})
 
         self._t0 = 0.0
         self._prog_total = 0
@@ -486,10 +489,19 @@ class MainWindow(QMainWindow):
         # editTextChanged bắt cả khi user gõ tay lẫn chọn từ danh sách.
         self.ai_model.editTextChanged.connect(self._set_ai_model)
 
+        # Nút lấy danh sách model MỚI NHẤT trực tiếp từ API của hãng.
+        self.ai_refresh_btn = QPushButton("↻")
+        self.ai_refresh_btn.setObjectName("Ghost")
+        self.ai_refresh_btn.setFixedWidth(40)
+        self.ai_refresh_btn.setCursor(Qt.PointingHandCursor)
+        self.ai_refresh_btn.setToolTip("Cập nhật danh sách model mới nhất từ API (cần API key).")
+        self.ai_refresh_btn.clicked.connect(self._refresh_ai_models_live)
+
         airow.addWidget(self.ai_cb)
         airow.addWidget(self.ai_provider)
         airow.addWidget(QLabel("Model:"))
         airow.addWidget(self.ai_model, 1)
+        airow.addWidget(self.ai_refresh_btn)
         ll.addLayout(airow)
 
         # Hàng key + nút Test kết nối
@@ -746,6 +758,7 @@ class MainWindow(QMainWindow):
             ai = on and self.srt_ai_on
             self.ai_provider.setEnabled(ai)
             self.ai_model.setEnabled(ai)
+            self.ai_refresh_btn.setEnabled(ai)
             self.ai_key_edit.setEnabled(ai)
             self.ai_test_btn.setEnabled(ai)
 
@@ -761,18 +774,69 @@ class MainWindow(QMainWindow):
         self._reload_ai_models()
 
     def _reload_ai_models(self, initial=False):
-        """Nạp danh sách model cho provider đang chọn; chọn model đã nhớ (nếu có)."""
+        """Nạp danh sách model cho provider đang chọn; chọn model đã nhớ (nếu có).
+        Ưu tiên danh sách LIVE đã cache (lấy từ API), nếu chưa có thì dùng danh
+        sách cứng trong scene_ai.MODELS."""
         prov = self.srt_ai_provider
         saved = (self.srt_ai_models.get(prov) or "").strip()
+        items = self.srt_ai_model_lists.get(prov) or scene_ai.MODELS.get(prov, [])
         self.ai_model.blockSignals(True)
         self.ai_model.clear()
-        self.ai_model.addItems(scene_ai.MODELS.get(prov, []))
+        self.ai_model.addItems(items)
         # Hiển thị model đã nhớ, nếu chưa có thì để mặc định (mục đầu).
         self.ai_model.setCurrentText(saved or scene_ai.default_model(prov))
         self.ai_model.blockSignals(False)
         if not initial:
             # Lưu lại lựa chọn hiện hành cho provider mới (đồng bộ settings).
             self._set_ai_model()
+
+    def _refresh_ai_models_live(self):
+        """Bấm ↻: gọi API lấy danh sách model mới nhất (luồng nền), cache lại."""
+        provider = self.srt_ai_provider
+        key = self.ai_key_edit.text().strip()
+        if not key:
+            return self._error("Hãy nhập API key trước khi cập nhật model.")
+        self._set_ai_key()
+        self.ai_refresh_btn.setEnabled(False)
+        self.ai_refresh_btn.setText("⏳")
+
+        # Job tự bắt lỗi → luôn trả (ok, data) để done() chạy & nút được reset.
+        def job(log=None):
+            try:
+                return True, scene_ai.list_models(provider, key)
+            except Exception as e:
+                return False, scene_ai._friendly_error(e, provider, "")
+
+        def done(result):
+            self.ai_refresh_btn.setEnabled(True)
+            self.ai_refresh_btn.setText("↻")
+            ok, data = result
+            if not ok:
+                self._log(f"❌ Cập nhật model lỗi: {data}")
+                QMessageBox.warning(self, "Cập nhật model thất bại", str(data))
+                return
+            models = data
+            if not models:
+                self._log(f"⚠ API {provider} không trả model nào.")
+                QMessageBox.warning(self, "Cập nhật model",
+                                    "Không lấy được model nào từ API.")
+                return
+            # Cache + giữ lựa chọn hiện tại nếu vẫn còn trong danh sách mới.
+            cur = self._cur_ai_model()
+            self.srt_ai_model_lists[provider] = models
+            config.set_setting("srt_ai_model_lists", self.srt_ai_model_lists)
+            self.ai_model.blockSignals(True)
+            self.ai_model.clear()
+            self.ai_model.addItems(models)
+            self.ai_model.setCurrentText(cur if cur in models else models[0])
+            self.ai_model.blockSignals(False)
+            self._set_ai_model()
+            self._log(f"✅ Đã cập nhật {len(models)} model cho {provider}.")
+            QMessageBox.information(
+                self, "Cập nhật model",
+                f"Đã lấy {len(models)} model mới nhất từ {provider}.")
+
+        self._run(job, done, f"Đang lấy danh sách model {provider}...")
 
     def _cur_ai_model(self) -> str:
         """Tên model đang chọn (rỗng → để scene_ai dùng mặc định)."""
