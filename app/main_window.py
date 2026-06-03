@@ -86,27 +86,25 @@ QComboBox QAbstractItemView {{
 #ModelLabel {{ color: #000000; font-size: 13px; font-weight: 800; }}
 #ModelBox {{
     background: #ffffff; border: 2px solid {C_ACCENT}; border-radius: 8px;
-    padding: 7px 12px; color: #000000; font-size: 14px; font-weight: 700;
+    /* chừa chỗ bên phải (36px) cho nút xổ xuống, tránh chữ bị đè */
+    padding: 7px 40px 7px 12px; color: #000000; font-size: 14px; font-weight: 700;
 }}
 #ModelBox:hover {{ border: 2px solid {C_ACCENT2}; }}
 #ModelBox:focus {{ border: 2px solid {C_ACCENT}; background: #ffffff; }}
 #ModelBox QLineEdit {{
-    background: transparent; border: none; padding: 0;
+    background: transparent; border: none; padding: 0; margin: 0;
     color: #000000; font-size: 14px; font-weight: 700;
 }}
-/* Vùng nút xổ xuống: nền tím nhạt + viền để user thấy rõ là bấm đổi được */
+/* Nút xổ xuống: tách hẳn bên phải, KHÔNG bo góc/viền để khỏi đè viền ô chính */
 #ModelBox::drop-down {{
-    subcontrol-origin: padding; subcontrol-position: top right; width: 32px;
-    border-left: 2px solid {C_ACCENT}; background: {C_ACCENT_SOFT};
-    border-top-right-radius: 6px; border-bottom-right-radius: 6px;
+    subcontrol-origin: padding; subcontrol-position: center right;
+    width: 34px; margin: 0; border: none; background: transparent;
 }}
-#ModelBox::drop-down:hover {{ background: {C_ACCENT}; }}
 #ModelBox::down-arrow {{
-    width: 0; height: 0;
+    image: none; width: 0; height: 0;
     border-left: 6px solid transparent; border-right: 6px solid transparent;
-    border-top: 7px solid {C_ACCENT};
+    border-top: 8px solid {C_ACCENT}; margin-right: 12px;
 }}
-#ModelBox::down-arrow:hover {{ border-top: 7px solid #ffffff; }}
 #ModelBox QAbstractItemView {{
     background: #ffffff; border: 2px solid {C_ACCENT};
     selection-background-color: {C_ACCENT}; selection-color: #ffffff;
