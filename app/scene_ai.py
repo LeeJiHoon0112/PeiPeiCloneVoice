@@ -114,14 +114,19 @@ def _extract_json_groups(text: str) -> list[list[int]]:
 
 
 # ----------------------------------------------------------------- gọi REST API
-def _call_gemini(api_key: str, model: str, prompt: str) -> str:
+# json_mode=True: ép model trả JSON thuần (dùng khi chia cảnh). Khi chỉ test kết
+# nối thì để False — vì OpenAI bắt buộc prompt phải chứa chữ "json" mới cho dùng
+# response_format=json_object, nếu không sẽ lỗi 400.
+def _call_gemini(api_key: str, model: str, prompt: str, json_mode: bool = True) -> str:
     import requests
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
            f"{model}:generateContent")
+    gen_cfg = {"temperature": 0.2}
+    if json_mode:
+        gen_cfg["responseMimeType"] = "application/json"
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.2,
-                             "responseMimeType": "application/json"},
+        "generationConfig": gen_cfg,
     }
     r = requests.post(url, params={"key": api_key}, json=body, timeout=_TIMEOUT)
     r.raise_for_status()
@@ -129,28 +134,29 @@ def _call_gemini(api_key: str, model: str, prompt: str) -> str:
     return data["candidates"][0]["content"]["parts"][0]["text"]
 
 
-def _call_openai(api_key: str, model: str, prompt: str) -> str:
+def _call_openai(api_key: str, model: str, prompt: str, json_mode: bool = True) -> str:
     import requests
     url = "https://api.openai.com/v1/chat/completions"
     body = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.2,
-        "response_format": {"type": "json_object"},
     }
+    if json_mode:
+        # OpenAI yêu cầu prompt có chữ 'json' khi bật chế độ này (đã có trong
+        # _build_prompt). Test kết nối dùng json_mode=False nên không vướng.
+        body["response_format"] = {"type": "json_object"}
     headers = {"Authorization": f"Bearer {api_key}"}
     r = requests.post(url, headers=headers, json=body, timeout=_TIMEOUT)
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"]
 
 
-def _call_claude(api_key: str, model: str, prompt: str) -> str:
+def _call_claude(api_key: str, model: str, prompt: str, json_mode: bool = True) -> str:
     import requests
     url = "https://api.anthropic.com/v1/messages"
     body = {
         "model": model,
         "max_tokens": 4096,
-        "temperature": 0.2,
         "messages": [{"role": "user", "content": prompt}],
     }
     headers = {
@@ -341,9 +347,10 @@ def test_connection(provider: str, api_key: str,
         return False, "Chưa nhập API key."
     mdl = model or default_model(provider)
     # Prompt tí hon: chỉ cần model phản hồi là biết key/model/đường truyền OK.
+    # json_mode=False để không vướng ràng buộc "prompt phải chứa chữ json" của OpenAI.
     ping = "Trả lời đúng một từ: OK."
     try:
-        text = _DISPATCH[provider](api_key.strip(), mdl, ping)
+        text = _DISPATCH[provider](api_key.strip(), mdl, ping, json_mode=False)
         snippet = (text or "").strip().replace("\n", " ")[:40]
         return True, f"Kết nối OK ({provider}/{mdl}). Phản hồi: {snippet!r}"
     except Exception as e:
