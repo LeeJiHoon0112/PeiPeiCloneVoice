@@ -95,12 +95,15 @@ QComboBox QAbstractItemView {{
     background: transparent; border: none; padding: 0; margin: 0;
     color: #000000; font-size: 14px; font-weight: 700;
 }}
-/* Nút xổ xuống: chỉ định vùng + KHÔNG override down-arrow → Qt vẽ mũi tên gốc
-   (luôn sạch, không bị render thành khối đặc như khi tự vẽ bằng CSS). */
+/* Vùng xổ xuống = 1 NÚT TÍM RÕ (nền tím nhạt, viền trái) để user biết bấm chọn
+   được. KHÔNG override down-arrow → Qt vẽ mũi tên gốc trên nền sáng (render sạch,
+   không thành khối đặc). */
 #ModelBox::drop-down {{
-    subcontrol-origin: padding; subcontrol-position: center right;
-    width: 28px; margin-right: 4px; border: none; background: transparent;
+    subcontrol-origin: padding; subcontrol-position: top right;
+    width: 30px; border-left: 2px solid {C_ACCENT}; background: {C_ACCENT_SOFT};
+    border-top-right-radius: 6px; border-bottom-right-radius: 6px;
 }}
+#ModelBox::drop-down:hover {{ background: {C_ACCENT2}; }}
 #ModelBox QAbstractItemView {{
     background: #ffffff; border: 2px solid {C_ACCENT};
     selection-background-color: {C_ACCENT}; selection-color: #ffffff;
@@ -542,12 +545,14 @@ class MainWindow(QMainWindow):
             "Lấy model mới nhất từ API cho CẢ 3 loại đã lưu key.")
         self.ai_refresh_btn.clicked.connect(self._refresh_ai_models_live)
 
+        self.ai_model.setToolTip("Bấm vào để xổ danh sách model và chọn (hoặc gõ tên).")
         airow.addWidget(self.ai_cb)
         airow.addWidget(self.ai_provider)
-        model_lbl = QLabel("Model:")
+        model_lbl = QLabel("Chọn Model ▾")
         model_lbl.setObjectName("ModelLabel")
         airow.addWidget(model_lbl)
         airow.addWidget(self.ai_model, 1)
+        airow.addSpacing(8)
         airow.addWidget(self.ai_refresh_btn)
         ll.addLayout(airow)
 
