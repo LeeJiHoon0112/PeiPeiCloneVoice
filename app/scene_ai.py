@@ -21,13 +21,16 @@ import re
 PROVIDERS = ("gemini", "openai", "claude")
 
 # Các model gợi ý cho từng hãng (phần tử ĐẦU là mặc định — rẻ + đủ thông minh để
-# chia cảnh). User vẫn có thể tự gõ tên model khác trong app.
+# chia cảnh). User vẫn có thể tự gõ tên model khác, hoặc bấm ↻ để lấy danh sách
+# MỚI NHẤT trực tiếp từ API (chính xác theo tài khoản). Danh sách dưới chỉ là gợi ý
+# ban đầu — cập nhật mốc 2026-06-03 (OpenAI đã ra dòng GPT-5.4).
 MODELS = {
-    "gemini": ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro",
+    "gemini": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash",
                "gemini-1.5-flash"],
-    "openai": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1"],
-    "claude": ["claude-3-5-haiku-latest", "claude-3-5-sonnet-latest",
-               "claude-sonnet-4-5"],
+    "openai": ["gpt-5.4-mini", "gpt-5.4", "gpt-5-mini", "gpt-5",
+               "gpt-4.1-mini", "gpt-4o-mini"],
+    "claude": ["claude-3-5-haiku-latest", "claude-sonnet-4-5",
+               "claude-3-5-sonnet-latest"],
 }
 
 
@@ -233,7 +236,9 @@ _OPENAI_SKIP = ("embedding", "whisper", "tts", "dall-e", "audio", "realtime",
 def _is_text_model(provider: str, name: str) -> bool:
     low = name.lower()
     if provider == "openai":
-        if not low.startswith("gpt"):
+        # Giữ dòng GPT (gpt-4/4o/4.1/5/5.4...) và dòng reasoning o-series (o1/o3/o4...).
+        is_chat = low.startswith("gpt") or re.match(r"^o\d", low)
+        if not is_chat:
             return False
         return not any(k in low for k in _OPENAI_SKIP)
     if provider == "gemini":
