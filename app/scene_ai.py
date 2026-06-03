@@ -20,12 +20,24 @@ import re
 
 PROVIDERS = ("gemini", "openai", "claude")
 
-# Model mặc định cho từng hãng (rẻ + đủ thông minh cho việc chia cảnh).
-_DEFAULT_MODEL = {
-    "gemini": "gemini-2.0-flash",
-    "openai": "gpt-4o-mini",
-    "claude": "claude-3-5-haiku-latest",
+# Các model gợi ý cho từng hãng (phần tử ĐẦU là mặc định — rẻ + đủ thông minh để
+# chia cảnh). User vẫn có thể tự gõ tên model khác trong app.
+MODELS = {
+    "gemini": ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro",
+               "gemini-1.5-flash"],
+    "openai": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1"],
+    "claude": ["claude-3-5-haiku-latest", "claude-3-5-sonnet-latest",
+               "claude-sonnet-4-5"],
 }
+
+
+def default_model(provider: str) -> str:
+    """Model mặc định của 1 hãng (phần tử đầu danh sách)."""
+    return MODELS.get((provider or "").lower(), ["?"])[0]
+
+
+# Giữ tương thích tên cũ.
+_DEFAULT_MODEL = {p: default_model(p) for p in PROVIDERS}
 
 _TIMEOUT = 60  # giây
 
@@ -34,25 +46,36 @@ def _build_prompt(sentences: list[str], target_dur: float,
                   min_dur: float, max_dur: float, kind: str) -> str:
     """Soạn chỉ dẫn cho model. Đính kèm độ dài (giây) ước lượng từng câu để model
     cân nhắc, nhưng nhấn mạnh ưu tiên gom theo Ý NGHĨA."""
-    purpose = ("tạo ẢNH TĨNH (mỗi cảnh là một khung hình cần mô tả rõ)"
+    purpose = ("tạo ẢNH TĨNH minh họa (mỗi cảnh là MỘT khung hình duy nhất, nên "
+               "gói trọn một hình ảnh rõ ràng để vẽ)"
                if kind == "image" else
-               "tạo CLIP VIDEO ĐỘNG (mỗi cảnh là một đoạn quay)")
+               "tạo CLIP VIDEO ĐỘNG (mỗi cảnh là một đoạn quay liền mạch)")
     lines = []
     for i, s in enumerate(sentences):
         lines.append(f"{i}: {s}")
     numbered = "\n".join(lines)
     return (
-        "Bạn là trợ lý dựng video. Tôi có một kịch bản đã tách thành các CÂU đánh "
-        f"số từ 0. Mục đích: {purpose}.\n\n"
-        "Hãy GOM các câu liên tiếp thành các CẢNH (scene) theo Ý NGHĨA: các câu "
-        "cùng một ý/một hình ảnh thì vào chung một cảnh; ngắt cảnh ở chỗ chuyển ý, "
-        "đổi bối cảnh, hoặc đổi chủ thể.\n\n"
+        "Bạn là một ĐẠO DIỄN PHÂN CẢNH (storyboard). Tôi có một kịch bản lồng "
+        "tiếng đã tách thành các CÂU đánh số từ 0. Audio đã được thu sẵn theo đúng "
+        "các câu này — bạn TUYỆT ĐỐI KHÔNG sửa, thêm, bớt hay viết lại chữ; chỉ "
+        "quyết định cách GOM câu thành cảnh.\n\n"
+        f"Mục đích: {purpose}.\n\n"
+        "Hãy đọc HIỂU nội dung, rồi gom các câu liên tiếp thành các CẢNH (scene) "
+        "sao cho mỗi cảnh là một đơn vị hình ảnh mạch lạc. NGẮT SANG CẢNH MỚI khi:\n"
+        "  • đổi bối cảnh / địa điểm,\n"
+        "  • đổi chủ thể hoặc nhân vật được nói tới,\n"
+        "  • đổi hành động hoặc mốc thời gian (vd 'mười phút sau'),\n"
+        "  • đổi ý/cảm xúc (đang kể chuyển sang đặt câu hỏi, kết luận...).\n"
+        "Các câu cùng mô tả MỘT hình ảnh/ý thì để CHUNG một cảnh.\n\n"
         "RÀNG BUỘC BẮT BUỘC:\n"
-        f"- Mỗi cảnh nên dài khoảng {target_dur:g} giây, trong khoảng "
-        f"{min_dur:g}–{max_dur:g} giây (đây là tổng thời lượng đọc của các câu trong cảnh).\n"
-        "- KHÔNG được đảo thứ tự câu. Mỗi câu thuộc đúng MỘT cảnh. Phải dùng HẾT "
-        "tất cả các câu, không bỏ sót, không thêm.\n\n"
-        "Dưới đây là các câu, kèm [độ dài giây] để bạn ước lượng:\n"
+        f"- Mỗi cảnh nên dài khoảng {target_dur:g} giây, và PHẢI trong khoảng "
+        f"{min_dur:g}–{max_dur:g} giây (tổng thời lượng đọc các câu trong cảnh — "
+        "dùng [số giây] kèm mỗi câu để cộng).\n"
+        f"- Tuyệt đối không tạo cảnh dài quá {max_dur:g} giây; nếu một ý dài hơn "
+        "thì tách thành nhiều cảnh tại ranh giới câu hợp lý.\n"
+        "- KHÔNG đảo thứ tự câu. Mỗi câu thuộc đúng MỘT cảnh. Phải dùng HẾT tất cả "
+        "các câu, không bỏ sót, không thêm câu nào.\n\n"
+        "Dưới đây là các câu, kèm [độ dài giây] để bạn cộng dồn:\n"
         f"{numbered}\n\n"
         "CHỈ trả về JSON đúng định dạng sau, không giải thích gì thêm:\n"
         '{"groups": [[0,1],[2],[3,4,5]]}'
@@ -156,6 +179,52 @@ def suggest_groups(segments: list[dict], provider: str, api_key: str,
             for s in segments]
     prompt = _build_prompt(_annotate_durations(sentences, durs),
                            target_dur, min_dur, max_dur, kind)
-    mdl = model or _DEFAULT_MODEL[provider]
+    mdl = model or default_model(provider)
     text = _DISPATCH[provider](api_key.strip(), mdl, prompt)
     return _extract_json_groups(text)
+
+
+def test_connection(provider: str, api_key: str,
+                    model: str | None = None) -> tuple[bool, str]:
+    """Kiểm tra nhanh key + model có gọi được không, bằng 1 yêu cầu cực nhỏ.
+
+    Trả về (ok, thông_điệp). KHÔNG ném exception — luôn trả message thân thiện để
+    hiện lên UI (vd: 'Sai API key', 'Model không tồn tại', 'Không có mạng'...).
+    """
+    provider = (provider or "").lower().strip()
+    if provider not in _DISPATCH:
+        return False, f"Nhà cung cấp không hỗ trợ: {provider!r}"
+    if not api_key or not api_key.strip():
+        return False, "Chưa nhập API key."
+    mdl = model or default_model(provider)
+    # Prompt tí hon: chỉ cần model phản hồi là biết key/model/đường truyền OK.
+    ping = "Trả lời đúng một từ: OK."
+    try:
+        text = _DISPATCH[provider](api_key.strip(), mdl, ping)
+        snippet = (text or "").strip().replace("\n", " ")[:40]
+        return True, f"Kết nối OK ({provider}/{mdl}). Phản hồi: {snippet!r}"
+    except Exception as e:
+        return False, _friendly_error(e, provider, mdl)
+
+
+def _friendly_error(e: Exception, provider: str, model: str) -> str:
+    """Đổi exception (thường là HTTPError của requests) sang thông điệp dễ hiểu."""
+    # Lấy status code nếu là lỗi HTTP từ requests.
+    status = None
+    resp = getattr(e, "response", None)
+    if resp is not None:
+        status = getattr(resp, "status_code", None)
+    name = type(e).__name__
+    if status == 401 or status == 403:
+        return f"Sai hoặc thiếu quyền API key ({status})."
+    if status == 404:
+        return f"Model không tồn tại: '{model}' (404). Hãy chọn model khác."
+    if status == 429:
+        return "Vượt hạn mức / quá nhiều yêu cầu (429). Thử lại sau."
+    if status == 400:
+        # Gemini hay trả 400 khi key sai hoặc model sai.
+        return (f"Yêu cầu không hợp lệ (400) — thường do API key sai hoặc "
+                f"model '{model}' không đúng.")
+    if "ConnectionError" in name or "Timeout" in name or "ConnectTimeout" in name:
+        return "Không kết nối được — kiểm tra mạng Internet."
+    return f"Lỗi: {name}: {str(e)[:80]}"

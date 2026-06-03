@@ -206,6 +206,8 @@ class MainWindow(QMainWindow):
         self.srt_ai_on = bool(config.get_setting("srt_ai_on", False))
         self.srt_ai_provider = str(config.get_setting("srt_ai_provider", "gemini"))
         self.srt_ai_key = str(config.get_setting("srt_ai_key", ""))
+        # Model chọn riêng cho từng provider (dict {provider: model}); trống = mặc định.
+        self.srt_ai_models = dict(config.get_setting("srt_ai_models", {}) or {})
 
         self._t0 = 0.0
         self._prog_total = 0
@@ -474,8 +476,25 @@ class MainWindow(QMainWindow):
         idx = max(0, self.ai_provider.findData(self.srt_ai_provider))
         self.ai_provider.setCurrentIndex(idx)
         self.ai_provider.setToolTip("Chọn nhà cung cấp API tương ứng với key bạn có.")
-        self.ai_provider.currentIndexChanged.connect(self._set_ai_provider)
+        self.ai_provider.currentIndexChanged.connect(self._on_ai_provider)
 
+        # Ô chọn model (editable — user gõ tên khác cũng được).
+        self.ai_model = QComboBox()
+        self.ai_model.setEditable(True)
+        self.ai_model.setMinimumWidth(180)
+        self.ai_model.setToolTip("Chọn hoặc gõ tên model. Mục đầu là mặc định (rẻ, nhanh).")
+        # editTextChanged bắt cả khi user gõ tay lẫn chọn từ danh sách.
+        self.ai_model.editTextChanged.connect(self._set_ai_model)
+
+        airow.addWidget(self.ai_cb)
+        airow.addWidget(self.ai_provider)
+        airow.addWidget(QLabel("Model:"))
+        airow.addWidget(self.ai_model, 1)
+        ll.addLayout(airow)
+
+        # Hàng key + nút Test kết nối
+        airow2 = QHBoxLayout()
+        airow2.setSpacing(8)
         self.ai_key_edit = QLineEdit()
         self.ai_key_edit.setText(self.srt_ai_key)
         self.ai_key_edit.setEchoMode(QLineEdit.Password)
@@ -483,12 +502,17 @@ class MainWindow(QMainWindow):
         self.ai_key_edit.setToolTip(
             "API key được lưu cục bộ trong user_data (không đẩy lên GitHub).")
         self.ai_key_edit.editingFinished.connect(self._set_ai_key)
+        self.ai_test_btn = QPushButton("🔌 Test kết nối")
+        self.ai_test_btn.setObjectName("Ghost")
+        self.ai_test_btn.setCursor(Qt.PointingHandCursor)
+        self.ai_test_btn.clicked.connect(self._test_ai)
+        airow2.addWidget(QLabel("API key:"))
+        airow2.addWidget(self.ai_key_edit, 1)
+        airow2.addWidget(self.ai_test_btn)
+        ll.addLayout(airow2)
 
-        airow.addWidget(self.ai_cb)
-        airow.addWidget(self.ai_provider)
-        airow.addWidget(self.ai_key_edit, 1)
-        ll.addLayout(airow)
-
+        # Nạp danh sách model cho provider đang chọn (đặt sau khi tạo ai_model).
+        self._reload_ai_models(initial=True)
         self._update_srt_enabled()
 
         # kết quả
@@ -721,20 +745,78 @@ class MainWindow(QMainWindow):
             self.ai_cb.setEnabled(on)
             ai = on and self.srt_ai_on
             self.ai_provider.setEnabled(ai)
+            self.ai_model.setEnabled(ai)
             self.ai_key_edit.setEnabled(ai)
+            self.ai_test_btn.setEnabled(ai)
 
     def _toggle_ai(self, on):
         self.srt_ai_on = bool(on)
         config.set_setting("srt_ai_on", self.srt_ai_on)
         self._update_srt_enabled()
 
-    def _set_ai_provider(self, _=None):
+    def _on_ai_provider(self, _=None):
+        """Đổi nhà cung cấp → lưu + nạp lại danh sách model của hãng đó."""
         self.srt_ai_provider = self.ai_provider.currentData() or "gemini"
         config.set_setting("srt_ai_provider", self.srt_ai_provider)
+        self._reload_ai_models()
+
+    def _reload_ai_models(self, initial=False):
+        """Nạp danh sách model cho provider đang chọn; chọn model đã nhớ (nếu có)."""
+        prov = self.srt_ai_provider
+        saved = (self.srt_ai_models.get(prov) or "").strip()
+        self.ai_model.blockSignals(True)
+        self.ai_model.clear()
+        self.ai_model.addItems(scene_ai.MODELS.get(prov, []))
+        # Hiển thị model đã nhớ, nếu chưa có thì để mặc định (mục đầu).
+        self.ai_model.setCurrentText(saved or scene_ai.default_model(prov))
+        self.ai_model.blockSignals(False)
+        if not initial:
+            # Lưu lại lựa chọn hiện hành cho provider mới (đồng bộ settings).
+            self._set_ai_model()
+
+    def _cur_ai_model(self) -> str:
+        """Tên model đang chọn (rỗng → để scene_ai dùng mặc định)."""
+        return self.ai_model.currentText().strip()
+
+    def _set_ai_model(self, _=None):
+        self.srt_ai_models[self.srt_ai_provider] = self._cur_ai_model()
+        config.set_setting("srt_ai_models", self.srt_ai_models)
+
+    def _set_ai_provider(self, _=None):
+        # Giữ tương thích (không còn nối trực tiếp; _on_ai_provider thay thế).
+        self._on_ai_provider()
 
     def _set_ai_key(self):
         self.srt_ai_key = self.ai_key_edit.text().strip()
         config.set_setting("srt_ai_key", self.srt_ai_key)
+
+    def _test_ai(self):
+        """Bấm 'Test kết nối': gọi API tí hon ở luồng nền, báo OK/lỗi."""
+        provider = self.srt_ai_provider
+        key = self.ai_key_edit.text().strip()
+        model = self._cur_ai_model()
+        if not key:
+            return self._error("Hãy nhập API key trước khi test.")
+        # Lưu key/model hiện tại để lần sau dùng luôn.
+        self._set_ai_key()
+        self._set_ai_model()
+        self.ai_test_btn.setEnabled(False)
+        self.ai_test_btn.setText("⏳ Đang test...")
+
+        def job(log=None):
+            return scene_ai.test_connection(provider, key, model)
+
+        def done(result):
+            ok, msg = result
+            self.ai_test_btn.setEnabled(True)
+            self.ai_test_btn.setText("🔌 Test kết nối")
+            self._log(("✅ " if ok else "❌ ") + msg)
+            if ok:
+                QMessageBox.information(self, "Test kết nối", msg)
+            else:
+                QMessageBox.warning(self, "Test kết nối thất bại", msg)
+
+        self._run(job, done, f"Đang test API {provider}...")
 
     def _cur_srt_dur(self) -> float:
         """Độ dài đích của mode đang chọn (0=ảnh tĩnh, 1=clip từ ảnh)."""
@@ -962,6 +1044,7 @@ class MainWindow(QMainWindow):
             "ai_on": self.srt_ai_on,
             "provider": self.srt_ai_provider,
             "key": self.srt_ai_key,
+            "model": self._cur_ai_model(),
         }
 
     def _make_srt_text(self, segments, cfg, log=lambda m: None):
@@ -978,7 +1061,8 @@ class MainWindow(QMainWindow):
             log(f"Đang gọi AI ({cfg['provider']}) để chia cảnh theo ý nghĩa...")
             groups = scene_ai.suggest_groups(
                 segments, cfg["provider"], cfg["key"],
-                cfg["target"], cfg["min"], cfg["max"], kind=cfg["kind"])
+                cfg["target"], cfg["min"], cfg["max"], kind=cfg["kind"],
+                model=cfg.get("model") or None)
             cues = cues_from_ai_groups(segments, groups, cfg["target"],
                                        cfg["min"], cfg["max"])
             if not cues:
