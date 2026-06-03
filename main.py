@@ -6,6 +6,13 @@ import sys
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
+# Windows không cho tạo symlink nếu không chạy bằng quyền Admin / Developer Mode
+# (gây OSError [WinError 1314] khi HuggingFace tải model lần đầu). Tắt symlink →
+# HF sẽ COPY file thẳng vào cache, không cần quyền đặc biệt. PHẢI đặt TRƯỚC khi
+# import huggingface_hub (hằng số được đọc 1 lần lúc import).
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
 # Tránh lỗi UnicodeEncodeError khi in tiếng Việt ra console Windows (cp1252)
 for _stream in (sys.stdout, sys.stderr):
     try:

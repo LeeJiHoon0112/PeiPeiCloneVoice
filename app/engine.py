@@ -150,49 +150,8 @@ def _split_long_segment(text, start, end, max_dur):
     return out
 
 
-def segments_to_srt(segments: list[dict], max_dur: float = 10.0,
-                    min_dur: float = 1.5, min_words: int = 4) -> str:
-    """Dựng nội dung .srt theo SPEC: mỗi block = 1 câu/1 ý, ≤ max_dur giây.
-
-    Quy tắc:
-      - Mỗi câu là 1 block riêng (KHÔNG gộp 2 câu vào 1 block).
-      - Câu dài hơn max_dur (mặc định 10s) → tách tại dấu phẩy / liên từ.
-      - Block quá ngắn (< min_dur giây HOẶC < min_words từ) → gộp với câu KẾ
-        tiếp, miễn tổng vẫn ≤ max_dur (để không quá vụn).
-      - Số thứ tự liên tục từ 1; thời gian khớp audio thật, không chồng lấn.
-    """
-    # B1: mỗi câu → 1 hay nhiều đơn vị, mỗi đơn vị ≤ max_dur
-    units = []
-    for seg in segments:
-        text = (seg.get("text") or "").strip()
-        if not text:
-            continue
-        units.extend(_split_long_segment(
-            text, float(seg.get("start", 0.0)),
-            float(seg.get("end", 0.0)), max_dur))
-
-    # B2: gộp đơn vị quá ngắn vào câu kế (chỉ khi tổng ≤ max_dur)
-    cues = []
-    i = 0
-    n = len(units)
-    while i < n:
-        u = units[i]
-        cur = {"text": u["text"], "start": u["start"], "end": u["end"]}
-        i += 1
-        while i < n:
-            cur_len = cur["end"] - cur["start"]
-            cur_words = len(cur["text"].split())
-            too_short = (cur_len < min_dur) or (cur_words < min_words)
-            combined = units[i]["end"] - cur["start"]
-            if too_short and combined <= max_dur:
-                cur["text"] = (cur["text"].rstrip() + " " + units[i]["text"].lstrip()).strip()
-                cur["end"] = units[i]["end"]
-                i += 1
-            else:
-                break
-        cues.append(cur)
-
-    # B3: render SRT (UTF-8, LF, mili-giây dùng dấu phẩy)
+def _render_srt(cues: list[dict]) -> str:
+    """Render danh sách cue [{start,end,text}] thành chuỗi .srt (UTF-8, LF)."""
     lines = []
     for idx, c in enumerate(cues, 1):
         lines.append(str(idx))
@@ -200,6 +159,171 @@ def segments_to_srt(segments: list[dict], max_dur: float = 10.0,
         lines.append((c.get("text") or "").strip())
         lines.append("")
     return "\n".join(lines).strip() + "\n"
+
+
+def _atomize(segments: list[dict], atom_max: float) -> list[dict]:
+    """Băm các câu thành 'atom' mịn (mỗi atom ≲ atom_max giây) để có nhiều điểm
+    cắt cho bước ghép tối ưu. Câu dài được tách tại dấu phẩy/liên từ (mốc thời
+    gian nội suy theo tỉ lệ ký tự — xem _split_long_segment)."""
+    atoms: list[dict] = []
+    for seg in segments:
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        atoms.extend(_split_long_segment(
+            text, float(seg.get("start", 0.0)),
+            float(seg.get("end", 0.0)), atom_max))
+    return atoms
+
+
+def _dp_partition(atoms: list[dict], target: float,
+                  min_dur: float, max_dur: float) -> list[dict]:
+    """Ghép các atom liên tiếp thành block sao cho TỔNG 'độ lệch so với target'
+    là NHỎ NHẤT trên TOÀN BỘ chuỗi (quy hoạch động), với ràng buộc mỗi block
+    nằm trong [min_dur, max_dur] giây. Đây là chìa khóa để KHÔNG còn block quá
+    ngắn (<min_dur) hay quá dài (>max_dur) — điều mà cách 'gom tham lam' không
+    đảm bảo được vì hay để lại block 'mồ côi' ở ranh giới.
+    """
+    n = len(atoms)
+    if n == 0:
+        return []
+    INF = float("inf")
+    best = [INF] * (n + 1)   # best[i] = tổng phạt tối ưu cho atoms[i:]
+    nxt = [-1] * (n + 1)
+    best[n] = 0.0
+    for i in range(n - 1, -1, -1):
+        j = i + 1
+        while j <= n:
+            d = atoms[j - 1]["end"] - atoms[i]["start"]
+            single = (j == i + 1)
+            # Vượt trần & không phải atom đơn lẻ → dừng mở rộng block này.
+            if d > max_dur and not single:
+                break
+            if d > max_dur:
+                pen = (d - target) ** 2 + 800.0      # atom đơn quá dài (hiếm): cho phép, phạt nặng
+            elif d < min_dur:
+                pen = (min_dur - d) ** 2 * 40.0 + 300.0  # block ngắn: phạt rất nặng để né
+            else:
+                pen = (d - target) ** 2
+            if best[j] + pen < best[i]:
+                best[i] = best[j] + pen
+                nxt[i] = j
+            j += 1
+    cues: list[dict] = []
+    i = 0
+    while i < n and nxt[i] != -1:
+        j = nxt[i]
+        cues.append({
+            "start": atoms[i]["start"],
+            "end": atoms[j - 1]["end"],
+            "text": " ".join(a["text"] for a in atoms[i:j]).strip(),
+        })
+        i = j
+    return cues
+
+
+def build_srt(segments: list[dict], target_dur: float = 8.0,
+              min_dur: float = 4.0, max_dur: float = 10.0) -> str:
+    """Dựng .srt với MỖI BLOCK NẰM TRONG [min_dur, max_dur] giây, độ dài tiệm
+    cận target_dur — phục vụ chia cảnh cho công cụ tạo video/ảnh (vd Veo3, mỗi
+    clip ≤ ~10s, không nên < 4s).
+
+    Cách làm: BĂM câu thành atom mịn (tách câu dài tại dấu phẩy/liên từ) rồi
+    GHÉP tối ưu (quy hoạch động) để gộp các câu ngắn liền nhau — loại bỏ block
+    quá ngắn mà vẫn không vượt giới hạn trên.
+    """
+    cues = build_cues(segments, target_dur, min_dur, max_dur)
+    return _render_srt(cues)
+
+
+def build_cues(segments: list[dict], target_dur: float = 8.0,
+               min_dur: float = 4.0, max_dur: float = 10.0) -> list[dict]:
+    """Như build_srt nhưng trả về DANH SÁCH cue [{start,end,text}] thay vì chuỗi
+    .srt — để bên gọi tái sử dụng (vd ghép thêm prompt, hoặc dùng cho AI)."""
+    if min_dur > max_dur:
+        min_dur = max_dur
+    target_dur = max(min_dur, min(target_dur, max_dur))
+    # Atom đủ mịn để DP có nhiều lựa chọn cắt, nhưng không quá vụn.
+    atom_max = max(min_dur, min(target_dur, max_dur * 0.6))
+    atoms = _atomize(segments, atom_max)
+    return _dp_partition(atoms, target_dur, min_dur, max_dur)
+
+
+def cues_from_ai_groups(segments: list[dict], groups: list[list[int]],
+                        target_dur: float = 8.0, min_dur: float = 4.0,
+                        max_dur: float = 10.0) -> list[dict]:
+    """Dựng cue từ cách NHÓM CÂU do AI đề xuất, NHƯNG vẫn ÉP CỨNG ràng buộc thời
+    lượng [min_dur, max_dur] — AI chỉ gợi ý ranh giới theo ý nghĩa, không được
+    phá luật về độ dài.
+
+    - `groups`: danh sách nhóm, mỗi nhóm là danh sách CHỈ SỐ câu (0-based) trong
+      `segments`, theo thứ tự. Vd [[0,1],[2],[3,4,5]].
+    - Mốc thời gian LẤY TỪ AUDIO THẬT (segments), không để AI bịa.
+    - Hậu xử lý: nhóm quá dài (>max_dur) → tách lại bằng DP; nhóm quá ngắn
+      (<min_dur) → gộp với hàng xóm ngắn hơn nếu tổng vẫn ≤ max_dur.
+
+    Trả về None nếu groups không hợp lệ (thiếu/sai chỉ số) để bên gọi fallback.
+    """
+    n = len(segments)
+    if not groups:
+        return None
+    # Kiểm tra: phải phủ ĐỦ và ĐÚNG mọi chỉ số 0..n-1, không trùng, không thiếu.
+    flat = [i for g in groups for i in g]
+    if sorted(flat) != list(range(n)):
+        return None
+    # Phải liên tục tăng dần trong từng nhóm và giữa các nhóm (không đảo câu).
+    if flat != list(range(n)):
+        return None
+
+    # B1: dựng cue thô theo nhóm (mốc thời gian từ segments thật).
+    raw = []
+    for g in groups:
+        if not g:
+            continue
+        s = segments[g[0]]["start"]
+        e = segments[g[-1]]["end"]
+        txt = " ".join((segments[i].get("text") or "").strip() for i in g).strip()
+        raw.append({"start": float(s), "end": float(e), "text": txt,
+                    "idx": list(g)})
+
+    # B2: nhóm nào > max_dur → tách lại bằng DP trên các câu con của nhóm đó.
+    fixed = []
+    for c in raw:
+        if (c["end"] - c["start"]) <= max_dur:
+            fixed.append({"start": c["start"], "end": c["end"], "text": c["text"]})
+            continue
+        sub = [segments[i] for i in c["idx"]]
+        fixed.extend(build_cues(sub, target_dur, min_dur, max_dur))
+
+    # B3: nhóm nào < min_dur → gộp với hàng xóm NGẮN hơn (nếu tổng ≤ max_dur),
+    # lặp đến ổn định để không còn block quá ngắn ở ranh giới.
+    changed = True
+    while changed and len(fixed) > 1:
+        changed = False
+        for j in range(len(fixed)):
+            if (fixed[j]["end"] - fixed[j]["start"]) >= min_dur:
+                continue
+            prev_r = (fixed[j]["end"] - fixed[j - 1]["start"]) if j > 0 else None
+            next_r = (fixed[j + 1]["end"] - fixed[j]["start"]) if j + 1 < len(fixed) else None
+            cand = []
+            if prev_r is not None and prev_r <= max_dur:
+                cand.append(("prev", prev_r))
+            if next_r is not None and next_r <= max_dur:
+                cand.append(("next", next_r))
+            if not cand:
+                continue
+            w, _ = min(cand, key=lambda x: x[1])
+            if w == "prev":
+                fixed[j - 1]["text"] = (fixed[j - 1]["text"] + " " + fixed[j]["text"]).strip()
+                fixed[j - 1]["end"] = fixed[j]["end"]
+                del fixed[j]
+            else:
+                fixed[j]["text"] = (fixed[j]["text"] + " " + fixed[j + 1]["text"]).strip()
+                fixed[j]["end"] = fixed[j + 1]["end"]
+                del fixed[j + 1]
+            changed = True
+            break
+    return fixed
 
 
 def _split_sentences(text: str) -> list[str]:

@@ -23,7 +23,8 @@ from PyQt5.QtWidgets import (
 )
 
 from . import config
-from .engine import VoiceEngine, segments_to_srt
+from .engine import VoiceEngine, build_cues, cues_from_ai_groups, _render_srt
+from . import scene_ai
 from .profiles import ProfileManager
 from .workers import Task
 
@@ -188,8 +189,23 @@ class MainWindow(QMainWindow):
         self.autosave_dir = config.get_setting("autosave_dir", config.OUTPUTS_DIR)
         self.autosave_on = bool(config.get_setting("autosave_on", True))
         self.srt_on = bool(config.get_setting("srt_on", True))
-        # Phụ đề (theo spec): mỗi block = 1 câu/1 ý, tối đa srt_max giây (≤10s).
-        self.srt_max = float(config.get_setting("srt_max", 10.0))
+        # Phụ đề dùng để CHIA CẢNH dựng video. User chọn 1 trong 2 mục đích, app
+        # xuất 1 file <tên>.srt. Mỗi block ≥ SRT_MIN_DUR và ≤ trần riêng từng mode:
+        #   mode 0 = Video ảnh tĩnh  → mỗi cảnh < 8s  (ảnh cần mô tả chi tiết)
+        #   mode 1 = Clip từ ảnh     → mỗi cảnh < 10s (≈ 1 clip Veo3)
+        self.srt_mode_idx = int(config.get_setting("srt_mode_idx", 0))
+        self.SRT_MIN_DUR = 4.0
+        self.SRT_MAX_IMG = 8.0   # trần cảnh ảnh tĩnh
+        self.SRT_MAX_VID = 10.0  # trần cảnh clip Veo3
+        self.srt_img_dur = float(config.get_setting("srt_img_dur", 7.0))
+        self.srt_vid_dur = float(config.get_setting("srt_vid_dur", 8.0))
+
+        # Chia cảnh bằng AI (tùy chọn): gom câu theo Ý NGHĨA qua API. Timestamp vẫn
+        # lấy từ audio; tắt/lỗi/không key → tự fallback thuật toán offline.
+        # API key lưu trong user_data/settings.json (đã gitignore — không lên GitHub).
+        self.srt_ai_on = bool(config.get_setting("srt_ai_on", False))
+        self.srt_ai_provider = str(config.get_setting("srt_ai_provider", "gemini"))
+        self.srt_ai_key = str(config.get_setting("srt_ai_key", ""))
 
         self._t0 = 0.0
         self._prog_total = 0
@@ -404,25 +420,76 @@ class MainWindow(QMainWindow):
         ll.addLayout(asrow)
         self._update_autosave_label()
 
-        # tùy chọn xuất kèm phụ đề SRT (mỗi block = 1 câu/1 ý, tối đa N giây)
+        # Tùy chọn xuất kèm 1 file phụ đề .SRT để CHIA CẢNH dựng video.
+        # User chọn 1 trong 2 mục đích; chỉ xuất 1 file <tên>.srt.
+        # Mọi block luôn trong [4s, 10s].
         srtrow = QHBoxLayout()
         srtrow.setSpacing(8)
-        self.srt_cb = QCheckBox("Xuất kèm file phụ đề .SRT")
+        self.srt_cb = QCheckBox("Xuất phụ đề .SRT (chia cảnh)")
         self.srt_cb.setChecked(self.srt_on)
+        self.srt_cb.setToolTip(
+            "Xuất 1 file <tên>.srt chia cảnh để dựng video.\n"
+            "Mọi block đều dài 4–10 giây (không quá ngắn, không vượt giới hạn Veo3).")
         self.srt_cb.toggled.connect(self._toggle_srt)
-        self.srt_max_spin = QSpinBox()
-        self.srt_max_spin.setRange(3, 15)
-        self.srt_max_spin.setValue(int(self.srt_max))
-        self.srt_max_spin.setSuffix(" s")
-        self.srt_max_spin.setToolTip(
-            "Mỗi block phụ đề = 1 câu/1 ý, KHÔNG dài quá số giây này.\n"
-            "Câu dài hơn sẽ tự tách tại dấu phẩy/liên từ. Khuyên 8–10s.")
-        self.srt_max_spin.valueChanged.connect(self._set_srt_dur)
+
+        # Mục đích: 0 = Video ảnh tĩnh, 1 = Clip từ ảnh (tạo ảnh trước → tạo clip).
+        self.srt_mode = QComboBox()
+        self.srt_mode.addItem("🖼️ Video ảnh tĩnh")
+        self.srt_mode.addItem("🎬 Clip từ ảnh")
+        self.srt_mode.setToolTip(
+            "Chọn loại video bạn muốn dựng:\n"
+            "  • Video ảnh tĩnh — mỗi cảnh = 1 ẢNH (cần mô tả chi tiết → cảnh ngắn hơn).\n"
+            "  • Clip từ ảnh — tạo ảnh trước rồi tạo CLIP ĐỘNG từ ảnh đó (mỗi cảnh ≈ 1 clip Veo3).")
+        self.srt_mode.setCurrentIndex(int(self.srt_mode_idx))
+        self.srt_mode.currentIndexChanged.connect(self._on_srt_mode)
+
+        self.srt_dur_spin = QSpinBox()
+        self.srt_dur_spin.setSuffix(" s")
+        self.srt_dur_spin.setToolTip(
+            "Độ dài đích mỗi cảnh. Ảnh tĩnh: 4–8s. Clip từ ảnh: 4–10s.")
+        self.srt_dur_spin.valueChanged.connect(self._set_srt_dur)
+        self._sync_srt_spin_range()  # đặt khoảng + giá trị theo mode đang chọn
+
         srtrow.addWidget(self.srt_cb)
-        srtrow.addWidget(QLabel("·  Mỗi block tối đa:"))
-        srtrow.addWidget(self.srt_max_spin)
+        srtrow.addWidget(self.srt_mode)
+        srtrow.addWidget(QLabel("·  Mỗi cảnh:"))
+        srtrow.addWidget(self.srt_dur_spin)
         srtrow.addStretch(1)
         ll.addLayout(srtrow)
+
+        # Hàng AI: chia cảnh theo Ý NGHĨA bằng API (tùy chọn). Tắt → dùng offline.
+        airow = QHBoxLayout()
+        airow.setSpacing(8)
+        self.ai_cb = QCheckBox("Chia cảnh bằng AI")
+        self.ai_cb.setChecked(self.srt_ai_on)
+        self.ai_cb.setToolTip(
+            "Dùng API để gom câu thành cảnh theo Ý NGHĨA (mạch lạc hơn chia máy móc).\n"
+            "Mốc thời gian vẫn lấy từ audio; vẫn ép mỗi cảnh trong giới hạn giây.\n"
+            "Tắt / lỗi mạng / chưa nhập key → tự dùng thuật toán offline.")
+        self.ai_cb.toggled.connect(self._toggle_ai)
+
+        self.ai_provider = QComboBox()
+        for label, val in (("Gemini", "gemini"), ("OpenAI", "openai"), ("Claude", "claude")):
+            self.ai_provider.addItem(label, val)
+        idx = max(0, self.ai_provider.findData(self.srt_ai_provider))
+        self.ai_provider.setCurrentIndex(idx)
+        self.ai_provider.setToolTip("Chọn nhà cung cấp API tương ứng với key bạn có.")
+        self.ai_provider.currentIndexChanged.connect(self._set_ai_provider)
+
+        self.ai_key_edit = QLineEdit()
+        self.ai_key_edit.setText(self.srt_ai_key)
+        self.ai_key_edit.setEchoMode(QLineEdit.Password)
+        self.ai_key_edit.setPlaceholderText("Dán API key...")
+        self.ai_key_edit.setToolTip(
+            "API key được lưu cục bộ trong user_data (không đẩy lên GitHub).")
+        self.ai_key_edit.editingFinished.connect(self._set_ai_key)
+
+        airow.addWidget(self.ai_cb)
+        airow.addWidget(self.ai_provider)
+        airow.addWidget(self.ai_key_edit, 1)
+        ll.addLayout(airow)
+
+        self._update_srt_enabled()
 
         # kết quả
         outrow = QHBoxLayout()
@@ -451,7 +518,7 @@ class MainWindow(QMainWindow):
             self.lang_combo.addItem(label)
         form.addRow(_field("Ngôn ngữ"), self.lang_combo)
 
-        self.speed, sw, self.speed_lbl = self._slider(50, 200, 95, lambda v: f"{v/100:.2f}x")
+        self.speed, sw, self.speed_lbl = self._slider(50, 200, 100, lambda v: f"{v/100:.2f}x")
         form.addRow(_field("Tốc độ"), sw)
 
         self.pause, pw, self.pause_lbl = self._slider(0, 80, 30, lambda v: f"{v/100:.2f}s")
@@ -461,7 +528,7 @@ class MainWindow(QMainWindow):
         self.guidance.setToolTip("Cao hơn = giống giọng mẫu hơn (quá cao dễ cứng/méo). Khuyên 2.5–3.0")
         form.addRow(_field("Độ giống giọng"), gw)
 
-        self.breath, bw, self.breath_lbl = self._slider(0, 100, 45, lambda v: f"{v}%")
+        self.breath, bw, self.breath_lbl = self._slider(0, 100, 30, lambda v: f"{v}%")
         self.breath.setToolTip("Làm nhỏ tiếng thở / tạp âm nền giữa các từ. 0% = tắt.")
         form.addRow(_field("Giảm tiếng thở"), bw)
 
@@ -642,10 +709,64 @@ class MainWindow(QMainWindow):
     def _toggle_srt(self, on):
         self.srt_on = bool(on)
         config.set_setting("srt_on", self.srt_on)
+        self._update_srt_enabled()
+
+    def _update_srt_enabled(self):
+        """Bật/tắt combo mục đích + ô giây + hàng AI theo trạng thái checkbox SRT."""
+        on = self.srt_on
+        if hasattr(self, "srt_mode"):
+            self.srt_mode.setEnabled(on)
+            self.srt_dur_spin.setEnabled(on)
+        if hasattr(self, "ai_cb"):
+            self.ai_cb.setEnabled(on)
+            ai = on and self.srt_ai_on
+            self.ai_provider.setEnabled(ai)
+            self.ai_key_edit.setEnabled(ai)
+
+    def _toggle_ai(self, on):
+        self.srt_ai_on = bool(on)
+        config.set_setting("srt_ai_on", self.srt_ai_on)
+        self._update_srt_enabled()
+
+    def _set_ai_provider(self, _=None):
+        self.srt_ai_provider = self.ai_provider.currentData() or "gemini"
+        config.set_setting("srt_ai_provider", self.srt_ai_provider)
+
+    def _set_ai_key(self):
+        self.srt_ai_key = self.ai_key_edit.text().strip()
+        config.set_setting("srt_ai_key", self.srt_ai_key)
+
+    def _cur_srt_dur(self) -> float:
+        """Độ dài đích của mode đang chọn (0=ảnh tĩnh, 1=clip từ ảnh)."""
+        return self.srt_img_dur if self.srt_mode_idx == 0 else self.srt_vid_dur
+
+    def _cur_srt_max(self) -> float:
+        """Trần độ dài 1 cảnh theo mode (ảnh <8s, clip <10s)."""
+        return self.SRT_MAX_IMG if self.srt_mode_idx == 0 else self.SRT_MAX_VID
+
+    def _sync_srt_spin_range(self):
+        """Đặt lại khoảng cho ô giây theo trần của mode đang chọn, kẹp giá trị."""
+        hi = int(self._cur_srt_max())
+        self.srt_dur_spin.blockSignals(True)
+        self.srt_dur_spin.setRange(int(self.SRT_MIN_DUR), hi)
+        self.srt_dur_spin.setValue(min(int(self._cur_srt_dur()), hi))
+        self.srt_dur_spin.blockSignals(False)
+
+    def _on_srt_mode(self, idx):
+        """Đổi mục đích SRT → cập nhật khoảng + giá trị ô giây của mode đó."""
+        self.srt_mode_idx = int(idx)
+        config.set_setting("srt_mode_idx", self.srt_mode_idx)
+        self._sync_srt_spin_range()
 
     def _set_srt_dur(self, _=None):
-        self.srt_max = float(self.srt_max_spin.value())
-        config.set_setting("srt_max", self.srt_max)
+        """Lưu độ dài đích cho ĐÚNG mode đang chọn (đã kẹp trong [min, trần])."""
+        val = float(self.srt_dur_spin.value())
+        if self.srt_mode_idx == 0:
+            self.srt_img_dur = val
+            config.set_setting("srt_img_dur", val)
+        else:
+            self.srt_vid_dur = val
+            config.set_setting("srt_vid_dur", val)
 
     def _pick_autosave_dir(self):
         d = QFileDialog.getExistingDirectory(
@@ -829,6 +950,45 @@ class MainWindow(QMainWindow):
         self._run(job, done, "Đang nhận diện lời thoại...")
 
     # ----------------------------------------------------------- generate
+    def _srt_snapshot(self) -> dict:
+        """Chụp lại cấu hình SRT ở MAIN THREAD để job nền dùng an toàn (không
+        đụng widget từ luồng khác)."""
+        return {
+            "on": self.srt_on,
+            "kind": "image" if self.srt_mode_idx == 0 else "video",
+            "target": self._cur_srt_dur(),
+            "min": self.SRT_MIN_DUR,
+            "max": self._cur_srt_max(),
+            "ai_on": self.srt_ai_on,
+            "provider": self.srt_ai_provider,
+            "key": self.srt_ai_key,
+        }
+
+    def _make_srt_text(self, segments, cfg, log=lambda m: None):
+        """Dựng nội dung .srt (chạy trong LUỒNG NỀN). Nếu bật AI + có key → thử
+        gom cảnh theo ý nghĩa; lỗi/không hợp lệ → fallback thuật toán offline.
+        Trả về (srt_text | None, used_ai: bool)."""
+        if not cfg["on"] or not segments:
+            return None, False
+        # Mặc định: offline (luôn có, làm phương án dự phòng).
+        offline_cues = build_cues(segments, cfg["target"], cfg["min"], cfg["max"])
+        if not (cfg["ai_on"] and cfg["key"].strip()):
+            return _render_srt(offline_cues), False
+        try:
+            log(f"Đang gọi AI ({cfg['provider']}) để chia cảnh theo ý nghĩa...")
+            groups = scene_ai.suggest_groups(
+                segments, cfg["provider"], cfg["key"],
+                cfg["target"], cfg["min"], cfg["max"], kind=cfg["kind"])
+            cues = cues_from_ai_groups(segments, groups, cfg["target"],
+                                       cfg["min"], cfg["max"])
+            if not cues:
+                raise ValueError("AI trả về cách nhóm không hợp lệ.")
+            log(f"AI chia thành {len(cues)} cảnh.")
+            return _render_srt(cues), True
+        except Exception as e:
+            log(f"⚠ AI chia cảnh lỗi ({e}). Dùng cách chia offline.")
+            return _render_srt(offline_cues), False
+
     def _do_generate(self):
         if not self.engine.ready:
             return self._error("Model chưa nạp xong.")
@@ -837,6 +997,7 @@ class MainWindow(QMainWindow):
             return self._error("Hãy nhập văn bản cần đọc.")
         common = self._gen_params()
         mode = self.mode.currentIndex()
+        srt_cfg = self._srt_snapshot()   # chụp cấu hình SRT ngay ở main thread
 
         if mode == 0:
             name = self.profile_combo.currentText().strip()
@@ -846,8 +1007,11 @@ class MainWindow(QMainWindow):
 
             def job(log=None, progress=None):
                 prompt = self.profiles.load_prompt(name)
-                return self.engine.generate(text, voice_clone_prompt=prompt,
-                                            progress=progress, with_segments=True, **common)
+                sr, audio, segs = self.engine.generate(
+                    text, voice_clone_prompt=prompt, progress=progress,
+                    with_segments=True, **common)
+                srt_text, _ = self._make_srt_text(segs, srt_cfg, log or (lambda m: None))
+                return sr, audio, srt_text
         elif mode == 1:
             ra = self.ref_audio_edit.text().strip()
             rt = self.ref_text_edit.toPlainText().strip()
@@ -856,36 +1020,39 @@ class MainWindow(QMainWindow):
             self._name_hint = "clone"
 
             def job(log=None, progress=None):
-                return self.engine.generate(text, ref_audio=ra, ref_text=rt or None,
-                                            progress=progress, with_segments=True, **common)
+                sr, audio, segs = self.engine.generate(
+                    text, ref_audio=ra, ref_text=rt or None, progress=progress,
+                    with_segments=True, **common)
+                srt_text, _ = self._make_srt_text(segs, srt_cfg, log or (lambda m: None))
+                return sr, audio, srt_text
         else:
             ins = self.instruct_edit.toPlainText().strip()
             self._name_hint = "design"
 
             def job(log=None, progress=None):
-                return self.engine.generate(text, instruct=ins or None,
-                                            progress=progress, with_segments=True, **common)
+                sr, audio, segs = self.engine.generate(
+                    text, instruct=ins or None, progress=progress,
+                    with_segments=True, **common)
+                srt_text, _ = self._make_srt_text(segs, srt_cfg, log or (lambda m: None))
+                return sr, audio, srt_text
 
         self._run(job, self._on_generated, "Đang tạo giọng nói...", pass_progress=True)
 
     def _on_generated(self, result):
-        # result = (sr, audio) hoặc (sr, audio, segments) khi xuất SRT
-        if len(result) == 3:
-            sr, audio, segments = result
-        else:
-            sr, audio = result
-            segments = None
+        # result = (sr, audio, srt_text) — srt_text có thể None nếu tắt SRT.
+        sr, audio, srt_text = result
         # Lưu thẳng vào thư mục người dùng đã chọn (nếu bật tự động lưu).
         target = self.autosave_dir if self.autosave_on else None
         self._present_audio(sr, audio, prefix=self._name_hint or "output",
-                            target_dir=target, segments=segments)
+                            target_dir=target, srt_text=srt_text)
 
-    def _present_audio(self, sr, audio, prefix="output", target_dir=None, segments=None):
+    def _present_audio(self, sr, audio, prefix="output", target_dir=None,
+                       srt_text=None):
         """Lưu audio (vào target_dir nếu có, không thì outputs), cập nhật UI, tự phát.
 
-        Nếu bật "Xuất SRT" và có segments → ghi kèm file .srt cùng tên với .wav.
-        Nếu lưu vào target_dir thất bại (thư mục bị xóa, không có quyền...) thì
-        tự động lưu tạm vào user_data/outputs để không mất kết quả.
+        srt_text: nội dung .srt ĐÃ dựng sẵn (ở luồng nền) — nếu có thì ghi kèm
+        file .srt cùng tên với .wav. Nếu lưu vào target_dir thất bại (thư mục bị
+        xóa, không quyền...) thì tự lưu tạm vào user_data/outputs để không mất kết quả.
         """
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         base_name = f"{_safe_filename(prefix)}_{ts}"
@@ -904,14 +1071,14 @@ class MainWindow(QMainWindow):
             autosaved = False
             self._log(f"⚠ Không lưu được vào thư mục đã chọn ({e}). Đã lưu tạm vào outputs.")
 
-        # Ghi kèm file phụ đề .srt (cùng tên, cùng thư mục)
+        # Ghi kèm 1 file phụ đề chia cảnh <tên>.srt (nội dung đã dựng sẵn ở luồng nền).
         srt_path = None
-        if self.srt_on and segments:
+        if srt_text:
             try:
                 srt_path = os.path.join(out_dir, base_name + ".srt")
                 # UTF-8 KHÔNG BOM, xuống dòng LF (\n) đúng spec.
                 with open(srt_path, "w", encoding="utf-8", newline="\n") as f:
-                    f.write(segments_to_srt(segments, max_dur=self.srt_max))
+                    f.write(srt_text)
             except Exception as e:
                 srt_path = None
                 self._log(f"⚠ Không ghi được file SRT: {e}")
