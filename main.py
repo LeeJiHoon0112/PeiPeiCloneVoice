@@ -57,11 +57,30 @@ def _fix_qt_plugin_path():
 def main():
     _fix_qt_plugin_path()
 
-    from PyQt5.QtWidgets import QApplication, QDialog
+    from PyQt5.QtWidgets import QApplication, QDialog, QMessageBox
+    from PyQt5.QtCore import QSharedMemory
     from app.login_dialog import LoginDialog
     from app.main_window import MainWindow
 
     app = QApplication(sys.argv)
+
+    # ----- CHỈ CHO MỞ 1 APP (single-instance) -----
+    # Mở 2 app cùng lúc làm nạp 2 lần model → cạn VRAM (RTX 4060 chỉ 8GB) →
+    # clone giọng RẤT chậm. Dùng QSharedMemory làm "khóa": app thứ 2 sẽ thấy
+    # khóa đã tồn tại → báo và thoát. Khóa tự giải phóng khi app đầu tắt.
+    _lock = QSharedMemory("PeiPeiCloneVoice_SingleInstance")
+    # Dọn khóa mồ côi (nếu app trước bị tắt đột ngột trên Linux/macOS; Windows
+    # tự dọn nên attach sẽ thất bại — không sao).
+    if _lock.attach():
+        _lock.detach()
+    if not _lock.create(1):
+        QMessageBox.warning(
+            None, "PeiPei đang chạy",
+            "Ứng dụng PeiPei Clone Voice đang mở rồi.\n\n"
+            "Mở 2 cửa sổ cùng lúc sẽ làm cạn bộ nhớ GPU và clone giọng rất chậm.\n"
+            "Hãy dùng cửa sổ đang mở (tìm trên thanh tác vụ).")
+        return 0
+    app._single_lock = _lock  # giữ tham chiếu để khóa sống suốt phiên
 
     # Nếu máy này đã "ghi nhớ" và còn khớp mật khẩu hiện hành → bỏ qua đăng nhập.
     from app import auth
