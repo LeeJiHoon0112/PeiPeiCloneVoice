@@ -45,6 +45,38 @@ class ProfileManager:
     def __init__(self):
         config.ensure_dirs()
         self.voices_dir = config.VOICES_DIR
+        # Danh sách tên giọng người dùng đã CHỦ ĐỘNG xóa — để auto-import KHÔNG
+        # khôi phục lại chúng từ tool gốc mỗi lần mở app. Lưu trong user_data.
+        self.deleted_file = os.path.join(config.USER_DATA_DIR, "deleted_voices.json")
+
+    # ------------------------------------------------- danh sách giọng đã xóa
+    def _load_deleted(self) -> set:
+        try:
+            with open(self.deleted_file, encoding="utf-8") as f:
+                data = json.load(f)
+            return set(data) if isinstance(data, list) else set()
+        except Exception:
+            return set()
+
+    def _save_deleted(self, names: set):
+        try:
+            with open(self.deleted_file, "w", encoding="utf-8") as f:
+                json.dump(sorted(names), f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def _mark_deleted(self, name: str):
+        s = self._load_deleted()
+        s.add(_safe_name(name))
+        self._save_deleted(s)
+
+    def _unmark_deleted(self, name: str):
+        """Bỏ tên khỏi danh sách đã xóa (khi user CHỦ ĐỘNG tạo/import lại giọng đó)."""
+        s = self._load_deleted()
+        n = _safe_name(name)
+        if n in s:
+            s.discard(n)
+            self._save_deleted(s)
 
     def list(self) -> list[dict]:
         items = []
@@ -84,6 +116,8 @@ class ProfileManager:
         }
         with open(os.path.join(d, f"{name}.json"), "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
+        # User chủ động tạo/lưu lại giọng này → bỏ khỏi danh sách "đã xóa".
+        self._unmark_deleted(name)
         return name
 
     def load_prompt(self, name: str):
@@ -103,6 +137,8 @@ class ProfileManager:
         d = os.path.join(self.voices_dir, name)
         if os.path.isdir(d):
             shutil.rmtree(d, ignore_errors=True)
+        # Ghi nhớ đã xóa → auto-import sẽ KHÔNG khôi phục lại từ tool gốc.
+        self._mark_deleted(name)
 
     # ------------------------------------------------------------- import
     def import_pt_file(self, pt_path: str, name: str | None = None,
@@ -124,14 +160,19 @@ class ProfileManager:
             ref_text = getattr(prompt, "ref_text", "") or ""
         return self.save(name, prompt, ref_audio=ref_audio, ref_text=ref_text)
 
-    def import_from_dir(self, src_dir: str, overwrite: bool = False) -> list[str]:
+    def import_from_dir(self, src_dir: str, overwrite: bool = False,
+                        skip_deleted: bool = False) -> list[str]:
         """Quét một thư mục giọng kiểu tool gốc (mỗi giọng 1 folder con chứa .pt
         và tùy chọn _metadata.json) và import các giọng chưa có. Trả về tên đã thêm.
+
+        skip_deleted=True: bỏ qua giọng người dùng đã chủ động xóa (dùng cho
+        auto-import để không "hồi sinh" giọng đã xóa).
         """
         added: list[str] = []
         if not src_dir or not os.path.isdir(src_dir):
             return added
 
+        deleted = self._load_deleted() if skip_deleted else set()
         for entry in sorted(os.listdir(src_dir)):
             sub = os.path.join(src_dir, entry)
             if not os.path.isdir(sub):
@@ -142,6 +183,8 @@ class ProfileManager:
                 continue
             pt_path = os.path.join(sub, pts[0])
             name = _safe_name(entry)
+            if skip_deleted and name in deleted:
+                continue  # giọng đã bị xóa → không khôi phục
             if self.exists(name) and not overwrite:
                 continue
             # đọc metadata kèm theo (nếu có) để lấy ref_audio / ref_text
@@ -166,9 +209,10 @@ class ProfileManager:
         return added
 
     def auto_import_old_tool_voices(self) -> list[str]:
-        """Tự động import giọng từ tool gốc (nếu thư mục tồn tại trên máy này)."""
+        """Tự động import giọng từ tool gốc (nếu thư mục tồn tại trên máy này).
+        BỎ QUA giọng người dùng đã xóa để không khôi phục lại chúng."""
         added: list[str] = []
         for d in config.OLD_TOOL_VOICES_DIRS:
             if d and os.path.isdir(d):
-                added += self.import_from_dir(d, overwrite=False)
+                added += self.import_from_dir(d, overwrite=False, skip_deleted=True)
         return added
