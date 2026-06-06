@@ -49,11 +49,19 @@
 
 ## 3. Cài đặt & mở ứng dụng
 
-1. Tải/giải nén thư mục ứng dụng về máy (ví dụ đặt ở Desktop).
-2. Nháy đúp **`install.bat`** → đợi cài xong (chỉ làm **1 lần**).
-3. Mỗi khi dùng, nháy đúp **`run.bat`** để mở ứng dụng.
+1. Tải/giải nén thư mục ứng dụng về máy (ví dụ đặt trong `psylo` ở Desktop). Mở vào thư mục **`PeiPeiCloneVoice`**:
 
-> 📷 *[Ảnh: thư mục ứng dụng, khoanh tròn `install.bat` và `run.bat`]*
+   ![Thư mục PeiPeiCloneVoice](docs/images/07_thu_muc_app.png)
+
+2. Bên trong, tìm các file **`.bat`** (Windows Batch File):
+
+   ![Các file install / run / update](docs/images/08_cac_file_bat.png)
+
+3. Nháy đúp **`install`** (`install.bat`) → đợi cài xong. **Chỉ làm 1 lần** khi mới tải app về.
+4. Mỗi khi muốn dùng, nháy đúp **`run`** (`run.bat`) để mở ứng dụng.
+5. Khi có bản cập nhật mới, nháy đúp **`update`** (`update.bat`) để tải code mới nhất. *Giọng đã lưu, model và cài đặt của bạn không bị mất.*
+
+> 💡 Cần hướng dẫn cài đặt chi tiết hơn (cài Python, tải app bằng Git…)? Xem file **`HUONG_DAN_CAI_DAT.md`** kèm theo app.
 
 ---
 
