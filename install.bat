@@ -60,9 +60,41 @@ python -m pip install --upgrade pip
 
 echo.
 echo [2/4] Installing PyTorch + torchaudio (CUDA 12.8)...
+echo     (GPU wheels are ~2.5GB - this can take a while; a stable network helps)
+
+rem --- Try the GPU (CUDA) wheels, with one automatic retry for flaky networks ---
+set "TORCH_OK="
 pip install --index-url https://download.pytorch.org/whl/cu128 torch==2.8.0+cu128 torchaudio==2.8.0+cu128
-if errorlevel 1 (
-  echo CUDA wheels failed - falling back to CPU ^(will be SLOW^)...
+if not errorlevel 1 ( set "TORCH_OK=1" ) else (
+  echo.
+  echo [WARN] First attempt to install the GPU version failed ^(often just a network hiccup^).
+  echo        Retrying once...
+  echo.
+  pip install --index-url https://download.pytorch.org/whl/cu128 torch==2.8.0+cu128 torchaudio==2.8.0+cu128
+  if not errorlevel 1 set "TORCH_OK=1"
+)
+
+rem --- If GPU wheels still failed, DO NOT silently install CPU. Warn loudly + ask. ---
+if not defined TORCH_OK (
+  echo.
+  echo ============================================================
+  echo  [!] COULD NOT INSTALL THE GPU ^(CUDA^) VERSION OF PYTORCH.
+  echo.
+  echo  If this machine HAS an NVIDIA GPU, the CPU version will be
+  echo  EXTREMELY SLOW ^(often 20-50x slower^). The usual causes are:
+  echo    - Unstable / slow internet while downloading ^(~2.5GB^)
+  echo    - Very old NVIDIA driver ^(update at nvidia.com/Download^)
+  echo.
+  echo  RECOMMENDED: fix the network/driver and run install.bat again.
+  echo ============================================================
+  echo.
+  choice /C YN /N /M "Install the SLOW CPU version anyway? (Y = yes / N = stop) : "
+  if errorlevel 2 (
+    echo Stopped. No CPU version installed. Fix the issue and run install.bat again.
+    pause
+    exit /b 1
+  )
+  echo Installing CPU version (this will be SLOW)...
   pip install --index-url https://download.pytorch.org/whl/cpu torch==2.8.0+cpu torchaudio==2.8.0+cpu
   if errorlevel 1 ( echo [ERROR] Failed to install torch. & pause & exit /b 1 )
 )
@@ -80,6 +112,23 @@ echo.
 echo [4/4] Verifying...
 python -c "import torch, omnivoice, PyQt5, soundfile, torchao; print('OK - torch', torch.__version__, '| CUDA:', torch.cuda.is_available())"
 if errorlevel 1 ( echo [ERROR] Verification failed. & pause & exit /b 1 )
+
+rem --- Warn LOUDLY if the final install ended up CPU-only (no GPU acceleration) ---
+python -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)"
+if errorlevel 1 (
+  echo.
+  echo ============================================================
+  echo  [!] WARNING: PyTorch cannot use your GPU ^(CUDA = False^).
+  echo      Voice generation will be VERY SLOW ^(CPU mode^).
+  echo.
+  echo  Fix one of these, then run:  install.bat force
+  echo    - You may have the CPU version of torch installed.
+  echo    - Or your NVIDIA driver is too old ^(update it, need ^>= 525^).
+  echo  Check with:
+  echo    venv\Scripts\python.exe -c "import torch;print(torch.__version__,torch.cuda.is_available())"
+  echo ============================================================
+  echo.
+)
 
 echo.
 echo ============================================================

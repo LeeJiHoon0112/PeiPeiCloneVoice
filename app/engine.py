@@ -447,14 +447,19 @@ class VoiceEngine:
         model_path, _tok_path, is_local = config.resolve_model_dir()
         asr_path, asr_local = config.resolve_asr_dir()
 
+        # Model có thể đã nằm trong cache HuggingFace (tải từ lần trước) dù KHÔNG
+        # ở các thư mục local cố định. Coi như "có sẵn" để không báo nhầm "đang tải".
+        model_ready = is_local or config.hf_cache_has(config.HF_MODEL_ID)
+        asr_ready = asr_local or config.hf_cache_has(config.HF_ASR_ID)
+
         log(f"Thiết bị: {self.device.upper()}"
             + (f" ({torch.cuda.get_device_name(0)})" if self.device == "cuda" else ""))
         if self.device != "cuda":
             log("⚠ Không thấy GPU NVIDIA — sẽ chạy bằng CPU và RẤT chậm.")
-        if not (is_local and asr_local):
+        if not (model_ready and asr_ready):
             log("Lần đầu chạy: đang TẢI MODEL (~4.7GB) về thư mục ./models — có thể mất vài phút...")
-        log(f"Model OmniVoice: {'(có sẵn) ' if is_local else '(tải về) '}{model_path}")
-        log(f"Model ASR Whisper: {'(có sẵn) ' if asr_local else '(tải về) '}{asr_path}")
+        log(f"Model OmniVoice: {'(có sẵn) ' if model_ready else '(tải về) '}{model_path}")
+        log(f"Model ASR Whisper: {'(có sẵn) ' if asr_ready else '(tải về) '}{asr_path}")
         log("Đang nạp model, vui lòng đợi...")
 
         # audio_tokenizer được tự nạp từ <model_path>/audio_tokenizer.

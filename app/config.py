@@ -75,6 +75,30 @@ def _first_existing(candidates):
     return None
 
 
+def hf_cache_has(repo_id: str) -> bool:
+    """True nếu model `repo_id` ĐÃ nằm trong cache HuggingFace (tải trước đó).
+
+    HF lưu cache theo cấu trúc: <cache>/models--<org>--<name>/snapshots/<hash>/...
+    Hàm này dò ở ./models/hf-cache (và HF_HOME/HF_HUB_CACHE nếu người dùng tự đặt),
+    để app KHÔNG báo nhầm "đang tải model" khi model thực ra đã có trong cache.
+    """
+    folder = "models--" + repo_id.replace("/", "--")
+    bases = [HF_CACHE_DIR, os.path.join(HF_CACHE_DIR, "hub")]
+    for env in ("HF_HUB_CACHE", "HF_HOME"):
+        v = os.environ.get(env)
+        if v:
+            bases.append(v)
+            bases.append(os.path.join(v, "hub"))
+    for base in bases:
+        snaps = os.path.join(base, folder, "snapshots")
+        if os.path.isdir(snaps):
+            for s in os.listdir(snaps):
+                sp = os.path.join(snaps, s)
+                if os.path.isdir(sp) and os.listdir(sp):  # snapshot không rỗng
+                    return True
+    return False
+
+
 def resolve_model_dir():
     """Trả về (model_path, audio_tokenizer_path, is_local)."""
     local = _first_existing(_OMNI_CANDIDATES)
