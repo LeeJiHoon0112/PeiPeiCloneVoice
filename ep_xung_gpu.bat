@@ -13,14 +13,12 @@ rem  MUST RUN AS ADMINISTRATOR (right-click -> Run as administrator).
 rem  The lock lasts until reboot or until you run reset_xung_gpu.bat.
 rem ============================================================
 
-rem --- Check admin rights ---
+rem --- Tu xin quyen Admin (UAC) neu chua co, roi chay lai chinh no ---
 net session >nul 2>&1
 if errorlevel 1 (
-  echo [LOI] Hay chay file nay bang quyen Administrator:
-  echo   Chuot phai vao file -^> "Run as administrator".
-  echo.
-  pause
-  exit /b 1
+  echo Dang xin quyen Administrator... (bam YES o hop thoai UAC)
+  powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+  exit /b 0
 )
 
 where nvidia-smi >nul 2>nul
@@ -31,7 +29,7 @@ if errorlevel 1 (
 )
 
 echo Dang doc xung nhip toi da cua GPU...
-for /f "tokens=1 delims= " %%A in ('nvidia-smi --query-gpu^=clocks.max.sm --format^=csv,noheader,nounits') do set "MAXCLK=%%A"
+for /f "tokens=1" %%A in ('nvidia-smi --query-gpu^=clocks.max.sm --format^="csv,noheader,nounits"') do set "MAXCLK=%%A"
 
 if "%MAXCLK%"=="" (
   echo [LOI] Khong doc duoc xung nhip toi da.

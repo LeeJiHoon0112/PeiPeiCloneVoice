@@ -9,9 +9,9 @@ rem ============================================================
 
 net session >nul 2>&1
 if errorlevel 1 (
-  echo [LOI] Hay chay bang quyen Administrator (chuot phai -^> Run as administrator).
-  pause
-  exit /b 1
+  echo Dang xin quyen Administrator... (bam YES o hop thoai UAC)
+  powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+  exit /b 0
 )
 
 where nvidia-smi >nul 2>nul
