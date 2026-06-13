@@ -24,7 +24,8 @@ from PyQt5.QtWidgets import (
 )
 
 from . import config
-from .engine import VoiceEngine, build_cues, cues_from_ai_groups, _render_srt
+from .engine import (VoiceEngine, build_cues, cues_from_ai_groups, _render_srt,
+                     _split_sentences)
 from . import scene_ai
 from .profiles import ProfileManager
 from .workers import Task
@@ -237,6 +238,13 @@ class MainWindow(QMainWindow):
         # Mỗi GIỌNG nhớ 1 thư mục lưu RIÊNG: {tên_giọng: đường_dẫn}. Chọn giọng nào
         # thì ô "Tự động lưu" hiện thư mục của giọng đó; đổi thư mục -> nhớ cho giọng đó.
         self.voice_dirs = dict(config.get_setting("voice_dirs", {}) or {})
+
+        # Hậu kỳ chất lượng audio (Nhóm A):
+        #  - audio_norm_on: chuẩn hóa độ to (~ -16 LUFS) + cắt lặng đầu/cuối + fade.
+        #  - text_norm_on:  đọc số/ngày/tiền/% thành chữ trước khi sinh.
+        self.audio_norm_on = bool(config.get_setting("audio_norm_on", True))
+        self.text_norm_on = bool(config.get_setting("text_norm_on", True))
+
         self.srt_on = bool(config.get_setting("srt_on", True))
         # Phụ đề dùng để CHIA CẢNH dựng video. User chọn 1 trong 2 mục đích, app
         # xuất 1 file <tên>.srt. Mỗi block ≥ SRT_MIN_DUR và ≤ trần riêng từng mode:
@@ -454,11 +462,22 @@ class MainWindow(QMainWindow):
             "Nhập nội dung muốn chuyển thành giọng nói...\nMẹo: viết có dấu chấm câu để ngắt nghỉ tự nhiên.")
         ll.addWidget(self.text_edit, 1)
 
+        genrow = QHBoxLayout()
+        genrow.setSpacing(8)
         self.btn_generate = QPushButton("🔊  Tạo giọng nói")
         self.btn_generate.setObjectName("Primary")
         self.btn_generate.setCursor(Qt.PointingHandCursor)
         self.btn_generate.clicked.connect(self._do_generate)
-        ll.addWidget(self.btn_generate)
+        self.btn_preview1 = QPushButton("🎧 Nghe thử 1 câu")
+        self.btn_preview1.setObjectName("Accent")
+        self.btn_preview1.setCursor(Qt.PointingHandCursor)
+        self.btn_preview1.setToolTip(
+            "Chỉ đọc CÂU ĐẦU (hoặc đoạn đang bôi đen) với thông số hiện tại để nghe "
+            "nhanh & tinh chỉnh trước khi tạo cả kịch bản — đỡ tốn thời gian GPU.")
+        self.btn_preview1.clicked.connect(self._preview_one_sentence)
+        genrow.addWidget(self.btn_generate, 1)
+        genrow.addWidget(self.btn_preview1)
+        ll.addLayout(genrow)
 
         # tự động lưu vào thư mục người dùng chọn
         asrow = QHBoxLayout()
@@ -656,6 +675,25 @@ class MainWindow(QMainWindow):
         self.quality.setCurrentIndex(1)
         form.addRow(_field("Chất lượng"), self.quality)
         rl.addLayout(form)
+
+        # Hậu kỳ chất lượng audio (Nhóm A) — bật mặc định để video đồng đều & sạch.
+        self.norm_audio_cb = QCheckBox("Chuẩn hóa âm lượng (đồng đều + chống vỡ tiếng)")
+        self.norm_audio_cb.setChecked(self.audio_norm_on)
+        self.norm_audio_cb.setToolTip(
+            "Kéo mọi file về cùng độ to (~ -16 LUFS), cắt khoảng lặng đầu/cuối, "
+            "và fade nhẹ chống tiếng 'tách' khi nối câu.\n"
+            "Khuyên BẬT để mọi video ra cùng mức âm lượng, khỏi chỉnh tay từng file.")
+        self.norm_audio_cb.toggled.connect(self._toggle_audio_norm)
+        rl.addWidget(self.norm_audio_cb)
+
+        self.norm_text_cb = QCheckBox("Đọc số / ngày / tiền thành chữ")
+        self.norm_text_cb.setChecked(self.text_norm_on)
+        self.norm_text_cb.setToolTip(
+            "VD: 1234 → 'một nghìn hai trăm ba mươi tư'; 50.000đ → 'năm mươi nghìn đồng'; "
+            "13/06/2026 → 'ngày mười ba tháng sáu năm...'.\n"
+            "Giúp model đọc ĐÚNG số liệu trong kịch bản (file .SRT cũng hiện chữ đã đọc).")
+        self.norm_text_cb.toggled.connect(self._toggle_text_norm)
+        rl.addWidget(self.norm_text_cb)
 
         hint = QLabel("💡 Mẹo: audio mẫu sạch & rõ → giọng giống hơn.\n"
                       "Tốc độ ~0.95x, Độ giống 2.5–3.0, Giảm tiếng thở 45–70%.")
@@ -1023,7 +1061,8 @@ class MainWindow(QMainWindow):
         if msg:
             self._set_status(msg, color)
         ready = self.engine.ready
-        for b in (self.btn_generate, self.btn_create, self.btn_preview):
+        for b in (self.btn_generate, self.btn_create, self.btn_preview,
+                  self.btn_preview1):
             b.setEnabled(not on and ready)
         # Nút "Chạy hàng đợi" cũng khóa khi bận (trừ khi chính hàng đợi đang chạy
         # — lúc đó nút Dừng mới là cái điều khiển).
@@ -1379,14 +1418,26 @@ class MainWindow(QMainWindow):
         return config.LANGUAGES[self.lang_combo.currentIndex()][1]
 
     def _gen_params(self):
-        return dict(
+        p = dict(
             language=self._lang_code(),
             speed=self.speed.value() / 100.0,
             num_step=self._quality_steps[self.quality.currentIndex()][1],
             pause_sec=self.pause.value() / 100.0,
             guidance_scale=self.guidance.value() / 100.0,
             breath_reduce=self.breath.value() / 100.0,
+            normalize=self.text_norm_on,           # đọc số → chữ
         )
+        if self.audio_norm_on:                     # chuẩn hóa âm lượng + cắt lặng + fade
+            p.update(target_lufs=-16.0, trim_silence=True, fade_ms=10.0)
+        return p
+
+    def _toggle_audio_norm(self, on):
+        self.audio_norm_on = bool(on)
+        config.set_setting("audio_norm_on", self.audio_norm_on)
+
+    def _toggle_text_norm(self, on):
+        self.text_norm_on = bool(on)
+        config.set_setting("text_norm_on", self.text_norm_on)
 
     # --------------------------------------------------------- model load
     def _load_model(self):
@@ -1629,6 +1680,52 @@ class MainWindow(QMainWindow):
                 return sr, audio, srt_text
 
         self._run(job, self._on_generated, "Đang tạo giọng nói...", pass_progress=True)
+
+    def _preview_one_sentence(self):
+        """Nghe thử nhanh CHỈ câu đầu (hoặc đoạn đang bôi đen) với thông số hiện tại
+        — để chốt tốc độ/độ giống/giảm thở trước khi tạo cả kịch bản, đỡ tốn GPU."""
+        if not self.engine.ready:
+            return self._error("Model chưa nạp xong.")
+        cur = self.text_edit.textCursor()
+        sel = cur.selectedText().strip() if cur.hasSelection() else ""
+        sel = sel.replace("\u2029", "\n")   # QTextEdit: U+2029 = ngat doan
+        sents = _split_sentences(sel or self.text_edit.toPlainText())
+        if not sents:
+            return self._error("Hãy nhập văn bản cần đọc.")
+        sentence = sents[0]
+        common = self._gen_params()
+        mode = self.mode.currentIndex()
+
+        if mode == 0:
+            name = self.profile_combo.currentText().strip()
+            if not name:
+                return self._error("Chưa có giọng đã lưu. Hãy tạo ở tab Quản lý giọng.")
+
+            def job(log=None, progress=None):
+                prompt = self.profiles.load_prompt(name)
+                return self.engine.generate(sentence, voice_clone_prompt=prompt,
+                                            progress=progress, **common)
+        elif mode == 1:
+            ra = self.ref_audio_edit.text().strip()
+            rt = self.ref_text_edit.toPlainText().strip()
+            if not ra or not os.path.exists(ra):
+                return self._error("Hãy chọn file audio mẫu hợp lệ.")
+
+            def job(log=None, progress=None):
+                return self.engine.generate(sentence, ref_audio=ra, ref_text=rt or None,
+                                            progress=progress, **common)
+        else:
+            ins = self.instruct_edit.toPlainText().strip()
+
+            def job(log=None, progress=None):
+                return self.engine.generate(sentence, instruct=ins or None,
+                                            progress=progress, **common)
+
+        def done(result):
+            sr, audio = result
+            self._present_audio(sr, audio, prefix="preview")
+
+        self._run(job, done, "Đang nghe thử 1 câu...", pass_progress=True)
 
     def _on_generated(self, result):
         # result = (sr, audio, srt_text) — srt_text có thể None nếu tắt SRT.

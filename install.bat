@@ -110,7 +110,7 @@ if errorlevel 1 ( echo [ERROR] Failed to install runtime extras. & pause & exit 
 
 echo.
 echo [4/4] Verifying...
-python -c "import torch, omnivoice, PyQt5, soundfile, torchao; print('OK - torch', torch.__version__, '| CUDA:', torch.cuda.is_available())"
+python -c "import torch, omnivoice, PyQt5, soundfile, torchao, pyloudnorm; print('OK - torch', torch.__version__, '| CUDA:', torch.cuda.is_available())"
 if errorlevel 1 ( echo [ERROR] Verification failed. & pause & exit /b 1 )
 
 rem --- Warn LOUDLY if the final install ended up CPU-only (no GPU acceleration) ---

@@ -7,6 +7,7 @@ import re
 import numpy as np
 
 from . import config
+from . import text_norm
 
 
 # Giọng mẫu nên ngắn (3-10s, tối đa ~20s). Audio dài hơn vừa làm giảm chất lượng
@@ -400,6 +401,127 @@ def _reduce_breath(audio: np.ndarray, sr: int, strength: float) -> np.ndarray:
     return x * gain_full
 
 
+def _frame_env_db(x: np.ndarray, sr: int, win_s: float = 0.02, hop_s: float = 0.01):
+    """Trả về (env_db theo khung, starts mẫu, win) — RMS theo khung tính nhanh bằng
+    cumsum bình phương. Dùng chung cho trim im lặng."""
+    n = x.size
+    win = max(1, int(win_s * sr))
+    hop = max(1, int(hop_s * sr))
+    nf = 1 + max(0, (n - win)) // hop
+    xs = x.astype(np.float64) ** 2
+    csum = np.concatenate(([0.0], np.cumsum(xs)))
+    starts = np.arange(nf) * hop
+    ends = np.minimum(starts + win, n)
+    env = np.sqrt((csum[ends] - csum[starts]) / np.maximum(ends - starts, 1) + 1e-12)
+    return 20.0 * np.log10(env + 1e-9), starts, win
+
+
+def _trim_silence(audio: np.ndarray, sr: int, rel_db: float = -45.0,
+                  pad_ms: float = 60.0):
+    """Cắt khoảng LẶNG thừa ở ĐẦU và CUỐI toàn bộ audio (không đụng lặng giữa câu).
+
+    rel_db: ngưỡng tính là "lặng" = thấp hơn đỉnh giọng rel_db dB.
+    pad_ms: chừa lại một ít đệm để không cắt cụt phụ âm đầu/cuối.
+    Trả về (audio_đã_cắt, số_mẫu_cắt_đầu, số_mẫu_cắt_cuối).
+    """
+    x = np.asarray(audio, dtype=np.float32)
+    n = x.size
+    if n < sr // 5:                       # quá ngắn → bỏ qua
+        return x, 0, 0
+    env_db, starts, win = _frame_env_db(x, sr)
+    peak_db = float(np.max(env_db))
+    thr = peak_db + rel_db
+    voiced = np.where(env_db > thr)[0]
+    if voiced.size == 0:
+        return x, 0, 0
+    pad = int(pad_ms / 1000.0 * sr)
+    lead = max(0, int(starts[voiced[0]]) - pad)
+    last_end = int(starts[voiced[-1]]) + win
+    tail = max(0, n - min(n, last_end + pad))
+    if lead == 0 and tail == 0:
+        return x, 0, 0
+    return np.ascontiguousarray(x[lead:n - tail]), lead, tail
+
+
+def _measure_lufs(audio: np.ndarray, sr: int):
+    """Đo độ to tích hợp (LUFS, chuẩn ITU-R BS.1770) bằng pyloudnorm nếu có.
+    Trả về None nếu không có thư viện hoặc audio quá ngắn để đo."""
+    try:
+        import pyloudnorm as pyln
+    except Exception:
+        return None
+    x = np.asarray(audio, dtype=np.float64)
+    if x.size < int(0.4 * sr):            # ngắn hơn 1 block 400ms → không đo được
+        return None
+    try:
+        val = float(pyln.Meter(sr).integrated_loudness(x))
+        return val if np.isfinite(val) else None
+    except Exception:
+        return None
+
+
+def _normalize_loudness(audio: np.ndarray, sr: int, target_lufs: float = -16.0,
+                        peak_db: float = -1.0) -> np.ndarray:
+    """Kéo độ to về mức chuẩn để MỌI file ra cùng âm lượng, kèm giới hạn đỉnh
+    (peak_db, dBFS) chống vỡ tiếng (clip).
+
+    Ưu tiên LUFS (pyloudnorm); không có thư viện / audio quá ngắn → fallback RMS.
+    """
+    x = np.asarray(audio, dtype=np.float32)
+    if x.size == 0:
+        return x
+    lufs = _measure_lufs(x, sr)
+    if lufs is not None:
+        gain_db = target_lufs - lufs
+    else:
+        rms = float(np.sqrt(np.mean(x.astype(np.float64) ** 2)))
+        if rms < 1e-7:
+            return x
+        gain_db = target_lufs - 20.0 * np.log10(rms)   # xấp xỉ: coi target ~ RMS dBFS
+    # Chặn gain bất thường (vd audio gần như im lặng → tránh khuếch đại nhiễu lên cực to).
+    gain_db = max(-30.0, min(30.0, gain_db))
+    y = x * (10.0 ** (gain_db / 20.0))
+    ceiling = 10.0 ** (peak_db / 20.0)
+    peak = float(np.max(np.abs(y))) if y.size else 0.0
+    if peak > ceiling and peak > 0:
+        y = y * (ceiling / peak)
+    return y.astype(np.float32)
+
+
+def _apply_fade(audio: np.ndarray, sr: int, fade_ms: float) -> np.ndarray:
+    """Fade in/out ở 2 đầu để tránh tiếng 'tách/click' khi bắt đầu/kết thúc hoặc
+    khi nối các đoạn lại với nhau. Không đổi độ dài."""
+    if fade_ms <= 0:
+        return audio
+    x = np.asarray(audio, dtype=np.float32)
+    f = int(fade_ms / 1000.0 * sr)
+    if f <= 0 or x.size < 2 * f:
+        return x
+    x = x.copy()
+    ramp = np.linspace(0.0, 1.0, f, dtype=np.float32)
+    x[:f] *= ramp
+    x[-f:] *= ramp[::-1]
+    return x
+
+
+def _finalize_audio(audio, sr, segments, target_lufs, trim_silence, fade_ms):
+    """Hậu kỳ chung cuối generate(): cắt lặng đầu/cuối (dời mốc thời gian SRT theo),
+    chuẩn hóa độ to, rồi fade 2 đầu. Trả về (audio, segments)."""
+    if trim_silence:
+        audio, lead, _tail = _trim_silence(audio, sr)
+        if segments:
+            shift = lead / sr
+            new_dur = len(audio) / sr
+            for s in segments:
+                s["start"] = max(0.0, s["start"] - shift)
+                s["end"] = min(new_dur, max(s["start"], s["end"] - shift))
+    if target_lufs is not None:
+        audio = _normalize_loudness(audio, sr, target_lufs)
+    if fade_ms and fade_ms > 0:
+        audio = _apply_fade(audio, sr, fade_ms)
+    return audio, segments
+
+
 def _load_wav_mono(path: str, max_seconds: float | None = None):
     """Đọc file audio thành (sóng 1-D float32, sample_rate), KHÔNG cần ffmpeg.
 
@@ -507,6 +629,10 @@ class VoiceEngine:
         pause_sec: float = 0.0,
         guidance_scale: float = 2.0,
         breath_reduce: float = 0.0,
+        normalize: bool = False,
+        target_lufs: float | None = None,
+        trim_silence: bool = False,
+        fade_ms: float = 0.0,
         voice_clone_prompt=None,
         ref_audio: str | None = None,
         ref_text: str | None = None,
@@ -516,9 +642,16 @@ class VoiceEngine:
     ):
         """Sinh audio. Trả về (sr, audio); nếu with_segments=True trả thêm danh sách
         đoạn [{"text", "start", "end"}] (giây) để xuất phụ đề SRT khớp từng câu.
+
+        Hậu kỳ (tùy chọn): normalize=True đọc số/ngày/tiền thành chữ trước khi sinh;
+        target_lufs chuẩn hóa độ to; trim_silence cắt lặng đầu/cuối; fade_ms fade 2 đầu.
         """
         if not self.ready:
             raise RuntimeError("Model chưa được nạp.")
+
+        # Tiền xử lý: đọc số/ngày/tiền/% thành chữ để model phát âm đúng (tùy chọn).
+        if normalize:
+            text = text_norm.normalize_text(text, language)
 
         def _report(done, total):
             if progress:
@@ -562,6 +695,9 @@ class VoiceEngine:
                 audios = self.model.generate(text=sent, **base)
                 piece = np.asarray(audios[0], dtype=np.float32)
                 piece = _reduce_breath(piece, self.sample_rate, breath_reduce)
+                # Fade nhẹ 2 đầu mỗi đoạn để điểm nối câu không nghe tiếng 'tách'.
+                if fade_ms and fade_ms > 0:
+                    piece = _apply_fade(piece, self.sample_rate, min(8.0, fade_ms))
                 if i and gap is not None:
                     pieces.append(gap)
                     cur += gap_n
@@ -571,6 +707,8 @@ class VoiceEngine:
                 segments.append({"text": sent, "start": start / sr, "end": cur / sr})
                 _report(i + 1, total)   # đã xong câu thứ (i+1)/total
             audio = np.concatenate(pieces)
+            audio, segments = _finalize_audio(
+                audio, sr, segments, target_lufs, trim_silence, fade_ms)
             return (sr, audio, segments) if with_segments else (sr, audio)
 
         # Một câu duy nhất: không biết % giữa chừng → báo 0% rồi 100% khi xong.
@@ -578,8 +716,11 @@ class VoiceEngine:
         audios = self.model.generate(text=text.strip(), **base)
         audio = np.asarray(audios[0], dtype=np.float32)
         audio = _reduce_breath(audio, self.sample_rate, breath_reduce)
+        seg = ([{"text": text.strip(), "start": 0.0, "end": len(audio) / sr}]
+               if with_segments else None)
+        audio, seg = _finalize_audio(
+            audio, sr, seg, target_lufs, trim_silence, fade_ms)
         _report(1, 1)
         if with_segments:
-            seg = [{"text": text.strip(), "start": 0.0, "end": len(audio) / sr}]
             return sr, audio, seg
         return sr, audio
