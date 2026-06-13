@@ -20,6 +20,7 @@ from PyQt5.QtWidgets import (
     QLabel, QPushButton, QComboBox, QLineEdit, QTextEdit, QPlainTextEdit,
     QSlider, QFileDialog, QMessageBox, QListWidget, QListWidgetItem,
     QStackedWidget, QFrame, QProgressBar, QCheckBox, QSpinBox,
+    QDialog, QDialogButtonBox,
 )
 
 from . import config
@@ -223,6 +224,12 @@ class MainWindow(QMainWindow):
         self._last_output = None
         self._quality_steps = [("Nhanh", 16), ("Chuẩn", 32), ("Cao", 48)]
 
+        # Hàng đợi: danh sách kịch bản chờ chuyển thành giọng. Mỗi item là dict
+        # {name, text, voice, status}. _queue_running = đang chạy cả loạt.
+        self._queue = []
+        self._queue_running = False
+        self._queue_stop = False
+
         # Tự động lưu audio: nhớ thư mục người dùng đã chọn (theo máy)
         self._name_hint = "output"
         self.autosave_dir = config.get_setting("autosave_dir", config.OUTPUTS_DIR)
@@ -284,6 +291,7 @@ class MainWindow(QMainWindow):
         self.pages = QStackedWidget()
         self.pages.addWidget(self._build_generate_page())
         self.pages.addWidget(self._build_manage_page())
+        self.pages.addWidget(self._build_queue_page())
         bl.addWidget(self.pages, 1)
 
         bl.addWidget(self._build_bottom())
@@ -300,7 +308,8 @@ class MainWindow(QMainWindow):
 
         self.tab_gen = QPushButton("🔊  Tạo giọng nói")
         self.tab_man = QPushButton("🎚️  Quản lý giọng")
-        for i, b in enumerate((self.tab_gen, self.tab_man)):
+        self.tab_queue = QPushButton("📋  Hàng đợi")
+        for i, b in enumerate((self.tab_gen, self.tab_man, self.tab_queue)):
             b.setObjectName("TabBtn")
             b.setCheckable(True)
             b.setCursor(Qt.PointingHandCursor)
@@ -330,6 +339,7 @@ class MainWindow(QMainWindow):
         self.pages.setCurrentIndex(idx)
         self.tab_gen.setChecked(idx == 0)
         self.tab_man.setChecked(idx == 1)
+        self.tab_queue.setChecked(idx == 2)
 
     def _build_bottom(self):
         wrap = QWidget()
@@ -712,6 +722,271 @@ class MainWindow(QMainWindow):
         split.addWidget(right, 0)
         return page
 
+    # ------------------------------------------------------- trang Hàng đợi
+    def _build_queue_page(self):
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(10)
+
+        lay.addWidget(_group_title("📋 Hàng đợi chuyển kịch bản thành giọng nói"))
+        hint = QLabel("Thêm nhiều kịch bản, chọn giọng cho từng cái, rồi bấm Chạy. "
+                      "App đọc lần lượt, mỗi kịch bản ra 1 thư mục con chứa audio + .srt.")
+        hint.setObjectName("Hint"); hint.setWordWrap(True)
+        lay.addWidget(hint)
+
+        # Hàng nút thêm / xóa
+        btnrow = QHBoxLayout(); btnrow.setSpacing(8)
+        b_txt = QPushButton("➕ Thêm từ file .txt...")
+        b_txt.setObjectName("Ghost"); b_txt.setCursor(Qt.PointingHandCursor)
+        b_txt.clicked.connect(self._queue_add_files)
+        b_paste = QPushButton("➕ Dán kịch bản...")
+        b_paste.setObjectName("Ghost"); b_paste.setCursor(Qt.PointingHandCursor)
+        b_paste.clicked.connect(self._queue_add_paste)
+        b_voice = QPushButton("🎙 Đổi giọng mục đang chọn")
+        b_voice.setObjectName("Ghost"); b_voice.setCursor(Qt.PointingHandCursor)
+        b_voice.clicked.connect(self._queue_set_voice)
+        b_del = QPushButton("🗑 Xóa mục đang chọn")
+        b_del.setObjectName("Danger"); b_del.setCursor(Qt.PointingHandCursor)
+        b_del.clicked.connect(self._queue_remove)
+        b_clear = QPushButton("Xóa hết")
+        b_clear.setObjectName("Ghost"); b_clear.setCursor(Qt.PointingHandCursor)
+        b_clear.clicked.connect(self._queue_clear)
+        for b in (b_txt, b_paste, b_voice, b_del):
+            btnrow.addWidget(b)
+        btnrow.addStretch(1)
+        btnrow.addWidget(b_clear)
+        lay.addLayout(btnrow)
+
+        # Danh sách hàng đợi
+        self.queue_list = QListWidget()
+        self.queue_list.setMinimumHeight(240)
+        lay.addWidget(self.queue_list, 1)
+
+        # Hàng chạy / dừng
+        runrow = QHBoxLayout(); runrow.setSpacing(8)
+        self.btn_queue_run = QPushButton("▶  Chạy hàng đợi")
+        self.btn_queue_run.setObjectName("Primary")
+        self.btn_queue_run.setCursor(Qt.PointingHandCursor)
+        self.btn_queue_run.clicked.connect(self._queue_run)
+        self.btn_queue_stop = QPushButton("■  Dừng")
+        self.btn_queue_stop.setObjectName("Ghost")
+        self.btn_queue_stop.setCursor(Qt.PointingHandCursor)
+        self.btn_queue_stop.setEnabled(False)
+        self.btn_queue_stop.clicked.connect(self._queue_request_stop)
+        runrow.addWidget(self.btn_queue_run, 1)
+        runrow.addWidget(self.btn_queue_stop)
+        lay.addLayout(runrow)
+        return page
+
+    # ------------------------------------------------- logic Hàng đợi
+    _Q_STATUS = {"wait": "⏳ Chờ", "run": "▶ Đang chạy", "done": "✅ Xong", "err": "❌ Lỗi"}
+
+    def _queue_refresh(self):
+        """Vẽ lại danh sách hàng đợi từ self._queue."""
+        cur = self.queue_list.currentRow()
+        self.queue_list.clear()
+        for it in self._queue:
+            st = self._Q_STATUS.get(it["status"], it["status"])
+            voice = it["voice"] or "(chưa chọn giọng)"
+            self.queue_list.addItem(f"{st}   |   {it['name']}   —   🎤 {voice}")
+        if 0 <= cur < self.queue_list.count():
+            self.queue_list.setCurrentRow(cur)
+
+    def _queue_default_voice(self):
+        """Giọng mặc định cho item mới: giọng đang chọn ở tab Tạo giọng (nếu có)."""
+        try:
+            v = self.profile_combo.currentText().strip()
+            return v or None
+        except Exception:
+            return None
+
+    def _queue_add_files(self):
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Chọn các file kịch bản (.txt)", "", "Văn bản (*.txt);;Tất cả (*.*)")
+        if not paths:
+            return
+        added = 0
+        for p in paths:
+            try:
+                with open(p, encoding="utf-8") as f:
+                    text = f.read().strip()
+            except Exception:
+                try:
+                    with open(p, encoding="utf-8-sig", errors="replace") as f:
+                        text = f.read().strip()
+                except Exception as e:
+                    self._log(f"⚠ Không đọc được {os.path.basename(p)}: {e}")
+                    continue
+            if not text:
+                self._log(f"⚠ Bỏ qua file rỗng: {os.path.basename(p)}")
+                continue
+            name = os.path.splitext(os.path.basename(p))[0]
+            self._queue.append({"name": _safe_filename(name), "text": text,
+                                "voice": self._queue_default_voice(), "status": "wait"})
+            added += 1
+        if added:
+            self._queue_refresh()
+            self._log(f"Đã thêm {added} kịch bản vào hàng đợi.")
+
+    def _queue_add_paste(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Dán kịch bản vào hàng đợi")
+        dl = QVBoxLayout(dlg)
+        dl.addWidget(_field("Tên (dùng làm tên file/thư mục):"))
+        name_edit = QLineEdit(); name_edit.setPlaceholderText("VD: Tap 01 - Mo dau")
+        dl.addWidget(name_edit)
+        dl.addWidget(_field("Chọn giọng:"))
+        voice_combo = QComboBox()
+        for it in self.profiles.list():
+            voice_combo.addItem(it["name"])
+        dl.addWidget(voice_combo)
+        dl.addWidget(_field("Nội dung kịch bản:"))
+        text_edit = QTextEdit(); text_edit.setMinimumSize(480, 220)
+        dl.addWidget(text_edit)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject)
+        dl.addWidget(bb)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        text = text_edit.toPlainText().strip()
+        name = name_edit.text().strip() or f"kichban_{len(self._queue) + 1}"
+        if not text:
+            return self._error("Chưa nhập nội dung kịch bản.")
+        self._queue.append({"name": _safe_filename(name), "text": text,
+                            "voice": voice_combo.currentText().strip() or None,
+                            "status": "wait"})
+        self._queue_refresh()
+        self._log(f"Đã thêm kịch bản '{name}' vào hàng đợi.")
+
+    def _queue_set_voice(self):
+        row = self.queue_list.currentRow()
+        if not (0 <= row < len(self._queue)):
+            return self._error("Hãy chọn 1 mục trong hàng đợi.")
+        voices = [it["name"] for it in self.profiles.list()]
+        if not voices:
+            return self._error("Chưa có giọng nào. Tạo giọng ở tab Quản lý giọng trước.")
+        cur = self._queue[row]["voice"]
+        idx = voices.index(cur) if cur in voices else 0
+        dlg = QDialog(self); dlg.setWindowTitle("Chọn giọng cho mục này")
+        dl = QVBoxLayout(dlg)
+        dl.addWidget(_field(f"Kịch bản: {self._queue[row]['name']}"))
+        combo = QComboBox(); combo.addItems(voices); combo.setCurrentIndex(idx)
+        dl.addWidget(combo)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject)
+        dl.addWidget(bb)
+        if dlg.exec_() == QDialog.Accepted:
+            self._queue[row]["voice"] = combo.currentText().strip()
+            self._queue_refresh()
+
+    def _queue_remove(self):
+        row = self.queue_list.currentRow()
+        if 0 <= row < len(self._queue):
+            if self._queue_running and self._queue[row]["status"] == "run":
+                return self._error("Không thể xóa mục đang chạy.")
+            del self._queue[row]
+            self._queue_refresh()
+
+    def _queue_clear(self):
+        if self._queue_running:
+            return self._error("Đang chạy hàng đợi — hãy Dừng trước khi xóa hết.")
+        if self._queue and QMessageBox.question(
+                self, "Xóa hết", "Xóa toàn bộ hàng đợi?") == QMessageBox.Yes:
+            self._queue.clear()
+            self._queue_refresh()
+
+    def _queue_request_stop(self):
+        self._queue_stop = True
+        self._log("Đã yêu cầu dừng — sẽ dừng sau khi xong kịch bản đang chạy.")
+        self.btn_queue_stop.setEnabled(False)
+
+    def _queue_run(self):
+        if not self.engine.ready:
+            return self._error("Model chưa nạp xong.")
+        if self._queue_running:
+            return
+        if self._task and self._task.isRunning():
+            return self._error("Đang có tác vụ khác chạy. Vui lòng đợi.")
+        pending = [it for it in self._queue if it["status"] in ("wait", "err")]
+        if not pending:
+            return self._error("Hàng đợi trống (hoặc tất cả đã xong). Hãy thêm kịch bản.")
+        # Mọi item phải có giọng hợp lệ.
+        voices = {it["name"] for it in self.profiles.list()}
+        missing = [it["name"] for it in pending if not it["voice"] or it["voice"] not in voices]
+        if missing:
+            return self._error("Các mục sau chưa chọn giọng hợp lệ: " + ", ".join(missing[:5]))
+
+        # Chụp cấu hình ở main thread (an toàn cho luồng nền).
+        common = self._gen_params()
+        srt_cfg = self._srt_snapshot()
+        base_dir = self.autosave_dir or config.OUTPUTS_DIR
+        targets = list(pending)  # tham chiếu chính các dict trong self._queue
+
+        self._queue_running = True
+        self._queue_stop = False
+        self.btn_queue_run.setEnabled(False)
+        self.btn_queue_stop.setEnabled(True)
+        self._busy(True, f"Đang chạy hàng đợi (0/{len(targets)})...", C_WARN)
+        self._start_progress()
+
+        def job(log=None, progress=None):
+            _log = log or (lambda m: None)
+            done_n, total = 0, len(targets)
+            results = []
+            for it in targets:
+                if self._queue_stop:
+                    _log("Đã dừng hàng đợi theo yêu cầu.")
+                    break
+                it["status"] = "run"
+                # cập nhật UI list từ luồng nền là không an toàn tuyệt đối, nhưng
+                # chỉ đọc/sửa text -> dùng log để báo; refresh ở done.
+                _log(f"[{done_n + 1}/{total}] Đang đọc: {it['name']} (giọng {it['voice']})")
+                try:
+                    prompt = self.profiles.load_prompt(it["voice"])
+                    sr, audio, segs = self.engine.generate(
+                        it["text"], voice_clone_prompt=prompt, progress=progress,
+                        with_segments=True, **common)
+                    srt_text, _ = self._make_srt_text(segs, srt_cfg, _log)
+                    # Mỗi kịch bản 1 thư mục con.
+                    sub = os.path.join(base_dir, _safe_filename(it["name"]))
+                    os.makedirs(sub, exist_ok=True)
+                    wav_path = os.path.join(sub, _safe_filename(it["name"]) + ".wav")
+                    sf.write(wav_path, audio, sr)
+                    if srt_text:
+                        with open(os.path.join(sub, _safe_filename(it["name"]) + ".srt"),
+                                  "w", encoding="utf-8", newline="\n") as f:
+                            f.write(srt_text)
+                    it["status"] = "done"
+                    results.append((it["name"], True, wav_path))
+                    _log(f"   ✅ Xong: {wav_path}")
+                except Exception as e:
+                    it["status"] = "err"
+                    results.append((it["name"], False, str(e)))
+                    _log(f"   ❌ Lỗi ở '{it['name']}': {e}")
+                done_n += 1
+                if progress:
+                    progress(done_n, total)
+            return results
+
+        def done(results):
+            self._queue_running = False
+            self._queue_stop = False
+            self.btn_queue_run.setEnabled(True)
+            self.btn_queue_stop.setEnabled(False)
+            self._queue_refresh()
+            ok = sum(1 for _, s, _ in results if s)
+            fail = len(results) - ok
+            self._log(f"Hàng đợi xong: {ok} thành công, {fail} lỗi.")
+            QMessageBox.information(
+                self, "Hàng đợi hoàn tất",
+                f"Đã xử lý {len(results)} kịch bản.\n"
+                f"✅ Thành công: {ok}\n❌ Lỗi: {fail}\n\n"
+                f"File lưu trong: {base_dir}")
+
+        self._run(job, done, f"Đang chạy hàng đợi (0/{len(targets)})...",
+                  pass_log=True, pass_progress=True)
+
     # ============================================================= helpers
     def _log(self, msg):
         ts = datetime.datetime.now().strftime("%H:%M:%S")
@@ -733,6 +1008,10 @@ class MainWindow(QMainWindow):
         ready = self.engine.ready
         for b in (self.btn_generate, self.btn_create, self.btn_preview):
             b.setEnabled(not on and ready)
+        # Nút "Chạy hàng đợi" cũng khóa khi bận (trừ khi chính hàng đợi đang chạy
+        # — lúc đó nút Dừng mới là cái điều khiển).
+        if hasattr(self, "btn_queue_run"):
+            self.btn_queue_run.setEnabled(not on and ready and not self._queue_running)
 
     def _run(self, fn, on_done, busy_msg, pass_log=False, pass_progress=False):
         if self._task and self._task.isRunning():
