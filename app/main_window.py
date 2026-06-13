@@ -234,6 +234,9 @@ class MainWindow(QMainWindow):
         self._name_hint = "output"
         self.autosave_dir = config.get_setting("autosave_dir", config.OUTPUTS_DIR)
         self.autosave_on = bool(config.get_setting("autosave_on", True))
+        # Mỗi GIỌNG nhớ 1 thư mục lưu RIÊNG: {tên_giọng: đường_dẫn}. Chọn giọng nào
+        # thì ô "Tự động lưu" hiện thư mục của giọng đó; đổi thư mục -> nhớ cho giọng đó.
+        self.voice_dirs = dict(config.get_setting("voice_dirs", {}) or {})
         self.srt_on = bool(config.get_setting("srt_on", True))
         # Phụ đề dùng để CHIA CẢNH dựng video. User chọn 1 trong 2 mục đích, app
         # xuất 1 file <tên>.srt. Mỗi block ≥ SRT_MIN_DUR và ≤ trần riêng từng mode:
@@ -401,6 +404,7 @@ class MainWindow(QMainWindow):
             "Thiết kế giọng (mô tả bằng lời)",
         ])
         self.mode.currentIndexChanged.connect(lambda i: self.mode_stack.setCurrentIndex(i))
+        self.mode.currentIndexChanged.connect(self._on_voice_changed)
         ll.addWidget(self.mode)
 
         self.mode_stack = QStackedWidget()
@@ -408,6 +412,7 @@ class MainWindow(QMainWindow):
         p0 = QWidget(); l0 = QVBoxLayout(p0); l0.setContentsMargins(0, 0, 0, 0); l0.setSpacing(8)
         rowc = QHBoxLayout()
         self.profile_combo = QComboBox()
+        self.profile_combo.currentIndexChanged.connect(self._on_voice_changed)
         btn_refresh = QPushButton("↻"); btn_refresh.setObjectName("Ghost")
         btn_refresh.setFixedWidth(42); btn_refresh.setCursor(Qt.PointingHandCursor)
         btn_refresh.setToolTip("Làm mới danh sách giọng")
@@ -789,7 +794,9 @@ class MainWindow(QMainWindow):
         for it in self._queue:
             st = self._Q_STATUS.get(it["status"], it["status"])
             voice = it["voice"] or "(chưa chọn giọng)"
-            self.queue_list.addItem(f"{st}   |   {it['name']}   —   🎤 {voice}")
+            d = it.get("out_dir") or ""
+            dshort = ("📁 …" + d[-30:]) if len(d) > 32 else (f"📁 {d}" if d else "")
+            self.queue_list.addItem(f"{st}  |  {it['name']}  —  🎤 {voice}   {dshort}")
         if 0 <= cur < self.queue_list.count():
             self.queue_list.setCurrentRow(cur)
 
@@ -822,8 +829,10 @@ class MainWindow(QMainWindow):
                 self._log(f"⚠ Bỏ qua file rỗng: {os.path.basename(p)}")
                 continue
             name = os.path.splitext(os.path.basename(p))[0]
+            voice = self._queue_default_voice()
             self._queue.append({"name": _safe_filename(name), "text": text,
-                                "voice": self._queue_default_voice(), "status": "wait"})
+                                "voice": voice, "out_dir": self._dir_for_voice(voice),
+                                "status": "wait"})
             added += 1
         if added:
             self._queue_refresh()
@@ -853,8 +862,9 @@ class MainWindow(QMainWindow):
         name = name_edit.text().strip() or f"kichban_{len(self._queue) + 1}"
         if not text:
             return self._error("Chưa nhập nội dung kịch bản.")
+        voice = voice_combo.currentText().strip() or None
         self._queue.append({"name": _safe_filename(name), "text": text,
-                            "voice": voice_combo.currentText().strip() or None,
+                            "voice": voice, "out_dir": self._dir_for_voice(voice),
                             "status": "wait"})
         self._queue_refresh()
         self._log(f"Đã thêm kịch bản '{name}' vào hàng đợi.")
@@ -877,7 +887,10 @@ class MainWindow(QMainWindow):
         bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject)
         dl.addWidget(bb)
         if dlg.exec_() == QDialog.Accepted:
-            self._queue[row]["voice"] = combo.currentText().strip()
+            nv = combo.currentText().strip()
+            self._queue[row]["voice"] = nv
+            # Đổi giọng -> cập nhật thư mục lưu theo thư mục đã nhớ của giọng mới.
+            self._queue[row]["out_dir"] = self._dir_for_voice(nv)
             self._queue_refresh()
 
     def _queue_remove(self):
@@ -920,8 +933,11 @@ class MainWindow(QMainWindow):
         # Chụp cấu hình ở main thread (an toàn cho luồng nền).
         common = self._gen_params()
         srt_cfg = self._srt_snapshot()
-        base_dir = self.autosave_dir or config.OUTPUTS_DIR
         targets = list(pending)  # tham chiếu chính các dict trong self._queue
+        # Mỗi item lưu vào THƯ MỤC RIÊNG của giọng nó (đã gắn lúc thêm vào hàng đợi).
+        for it in targets:
+            if not it.get("out_dir"):
+                it["out_dir"] = self._dir_for_voice(it.get("voice"))
 
         self._queue_running = True
         self._queue_stop = False
@@ -948,8 +964,9 @@ class MainWindow(QMainWindow):
                         it["text"], voice_clone_prompt=prompt, progress=progress,
                         with_segments=True, **common)
                     srt_text, _ = self._make_srt_text(segs, srt_cfg, _log)
-                    # Mỗi kịch bản 1 thư mục con.
-                    sub = os.path.join(base_dir, _safe_filename(it["name"]))
+                    # Mỗi kịch bản 1 thư mục con, NẰM TRONG thư mục riêng của giọng.
+                    item_base = it.get("out_dir") or config.OUTPUTS_DIR
+                    sub = os.path.join(item_base, _safe_filename(it["name"]))
                     os.makedirs(sub, exist_ok=True)
                     wav_path = os.path.join(sub, _safe_filename(it["name"]) + ".wav")
                     sf.write(wav_path, audio, sr)
@@ -982,7 +999,7 @@ class MainWindow(QMainWindow):
                 self, "Hàng đợi hoàn tất",
                 f"Đã xử lý {len(results)} kịch bản.\n"
                 f"✅ Thành công: {ok}\n❌ Lỗi: {fail}\n\n"
-                f"File lưu trong: {base_dir}")
+                f"Mỗi kịch bản lưu vào thư mục riêng của giọng nó.")
 
         self._run(job, done, f"Đang chạy hàng đợi (0/{len(targets)})...",
                   pass_log=True, pass_progress=True)
@@ -1077,15 +1094,42 @@ class MainWindow(QMainWindow):
 
     # --------------------------------------------------- tự động lưu thư mục
     def _update_autosave_label(self):
-        p = self.autosave_dir or config.OUTPUTS_DIR
-        self.autosave_lbl.setToolTip(p)
+        v = self._cur_voice_name() if hasattr(self, "mode") else None
+        p = self._dir_for_voice(v) if v else (self.autosave_dir or config.OUTPUTS_DIR)
+        self.autosave_lbl.setToolTip(
+            (f"Thư mục lưu cho giọng '{v}':\n" if v else "") + p)
         disp = p if len(p) <= 38 else "…" + p[-37:]
+        if v:
+            disp = f"[{v}] " + disp
         self.autosave_lbl.setText(disp)
         self.autosave_lbl.setEnabled(self.autosave_on)
 
     def _toggle_autosave(self, on):
         self.autosave_on = bool(on)
         config.set_setting("autosave_on", self.autosave_on)
+        self._update_autosave_label()
+
+    # --- Thư mục lưu RIÊNG theo từng giọng ---
+    def _cur_voice_name(self):
+        """Tên giọng đang chọn ở 'Nguồn giọng' (chỉ khi dùng giọng đã lưu)."""
+        try:
+            if self.mode.currentIndex() == 0:
+                return self.profile_combo.currentText().strip() or None
+        except Exception:
+            pass
+        return None
+
+    def _dir_for_voice(self, voice):
+        """Thư mục lưu đã nhớ cho 1 giọng; chưa có thì dùng thư mục chung gần nhất."""
+        if voice and self.voice_dirs.get(voice):
+            return self.voice_dirs[voice]
+        return self.autosave_dir or config.OUTPUTS_DIR
+
+    def _on_voice_changed(self, *_):
+        """Đổi giọng đang chọn -> ô 'Tự động lưu vào' hiện thư mục của giọng đó."""
+        v = self._cur_voice_name()
+        if v:
+            self.autosave_dir = self._dir_for_voice(v)
         self._update_autosave_label()
 
     def _toggle_srt(self, on):
@@ -1309,11 +1353,19 @@ class MainWindow(QMainWindow):
     def _pick_autosave_dir(self):
         d = QFileDialog.getExistingDirectory(
             self, "Chọn thư mục tự động lưu audio", self.autosave_dir or "")
-        if d:
-            self.autosave_dir = d
-            config.set_setting("autosave_dir", d)
-            self._update_autosave_label()
+        if not d:
+            return
+        self.autosave_dir = d
+        config.set_setting("autosave_dir", d)   # thư mục chung gần nhất (dự phòng)
+        # Nếu đang chọn 1 giọng -> NHỚ thư mục này RIÊNG cho giọng đó.
+        v = self._cur_voice_name()
+        if v:
+            self.voice_dirs[v] = d
+            config.set_setting("voice_dirs", self.voice_dirs)
+            self._log(f"Thư mục lưu cho giọng '{v}': {d}")
+        else:
             self._log(f"Thư mục tự động lưu: {d}")
+        self._update_autosave_label()
 
     def _open_autosave_dir(self):
         d = self.autosave_dir or config.OUTPUTS_DIR
