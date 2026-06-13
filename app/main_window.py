@@ -789,13 +789,17 @@ class MainWindow(QMainWindow):
         b_voice = QPushButton("🎙 Đổi giọng mục đang chọn")
         b_voice.setObjectName("Ghost"); b_voice.setCursor(Qt.PointingHandCursor)
         b_voice.clicked.connect(self._queue_set_voice)
+        b_dir = QPushButton("📁 Đổi thư mục mục đang chọn")
+        b_dir.setObjectName("Ghost"); b_dir.setCursor(Qt.PointingHandCursor)
+        b_dir.setToolTip("Đổi thư mục lưu (audio + .srt) cho mục đang chọn trong hàng đợi.")
+        b_dir.clicked.connect(self._queue_set_dir)
         b_del = QPushButton("🗑 Xóa mục đang chọn")
         b_del.setObjectName("Danger"); b_del.setCursor(Qt.PointingHandCursor)
         b_del.clicked.connect(self._queue_remove)
         b_clear = QPushButton("Xóa hết")
         b_clear.setObjectName("Ghost"); b_clear.setCursor(Qt.PointingHandCursor)
         b_clear.clicked.connect(self._queue_clear)
-        for b in (b_txt, b_paste, b_voice, b_del):
+        for b in (b_txt, b_paste, b_voice, b_dir, b_del):
             btnrow.addWidget(b)
         btnrow.addStretch(1)
         btnrow.addWidget(b_clear)
@@ -888,6 +892,36 @@ class MainWindow(QMainWindow):
         for it in self.profiles.list():
             voice_combo.addItem(it["name"])
         dl.addWidget(voice_combo)
+
+        # Thư mục lưu (audio + .srt). Mặc định theo thư mục của giọng; tự cập nhật
+        # khi đổi giọng — TRỪ KHI người dùng đã tự bấm "Chọn..." (giữ lựa chọn của họ).
+        dl.addWidget(_field("Thư mục lưu (audio + .srt):"))
+        dirrow = QHBoxLayout(); dirrow.setSpacing(8)
+        init_voice = voice_combo.currentText().strip() or None
+        dir_edit = QLineEdit(self._dir_for_voice(init_voice))
+        dir_edit.setReadOnly(True)
+        dir_edit.setToolTip(dir_edit.text())
+        btn_dir = QPushButton("Chọn..."); btn_dir.setObjectName("Ghost")
+        btn_dir.setCursor(Qt.PointingHandCursor)
+        dirrow.addWidget(dir_edit, 1); dirrow.addWidget(btn_dir)
+        dl.addLayout(dirrow)
+        manual = {"on": False}   # True khi người dùng tự chọn thư mục
+
+        def _pick_dir():
+            d = QFileDialog.getExistingDirectory(
+                dlg, "Chọn thư mục lưu audio + SRT",
+                dir_edit.text() or config.OUTPUTS_DIR)
+            if d:
+                manual["on"] = True
+                dir_edit.setText(d); dir_edit.setToolTip(d)
+        btn_dir.clicked.connect(_pick_dir)
+
+        def _on_voice(v):
+            if not manual["on"]:
+                p = self._dir_for_voice(v.strip() or None)
+                dir_edit.setText(p); dir_edit.setToolTip(p)
+        voice_combo.currentTextChanged.connect(_on_voice)
+
         dl.addWidget(_field("Nội dung kịch bản:"))
         text_edit = QTextEdit(); text_edit.setMinimumSize(480, 220)
         dl.addWidget(text_edit)
@@ -901,11 +935,12 @@ class MainWindow(QMainWindow):
         if not text:
             return self._error("Chưa nhập nội dung kịch bản.")
         voice = voice_combo.currentText().strip() or None
+        out_dir = dir_edit.text().strip() or self._dir_for_voice(voice)
         self._queue.append({"name": _safe_filename(name), "text": text,
-                            "voice": voice, "out_dir": self._dir_for_voice(voice),
+                            "voice": voice, "out_dir": out_dir,
                             "status": "wait"})
         self._queue_refresh()
-        self._log(f"Đã thêm kịch bản '{name}' vào hàng đợi.")
+        self._log(f"Đã thêm kịch bản '{name}' vào hàng đợi → lưu tại: {out_dir}")
 
     def _queue_set_voice(self):
         row = self.queue_list.currentRow()
@@ -930,6 +965,22 @@ class MainWindow(QMainWindow):
             # Đổi giọng -> cập nhật thư mục lưu theo thư mục đã nhớ của giọng mới.
             self._queue[row]["out_dir"] = self._dir_for_voice(nv)
             self._queue_refresh()
+
+    def _queue_set_dir(self):
+        """Đổi thư mục lưu (audio + .srt) cho mục đang chọn trong hàng đợi."""
+        row = self.queue_list.currentRow()
+        if not (0 <= row < len(self._queue)):
+            return self._error("Hãy chọn 1 mục trong hàng đợi.")
+        cur = (self._queue[row].get("out_dir")
+               or self._dir_for_voice(self._queue[row].get("voice")))
+        d = QFileDialog.getExistingDirectory(
+            self, f"Chọn thư mục lưu cho '{self._queue[row]['name']}'",
+            cur or config.OUTPUTS_DIR)
+        if not d:
+            return
+        self._queue[row]["out_dir"] = d
+        self._queue_refresh()
+        self._log(f"Mục '{self._queue[row]['name']}' sẽ lưu vào: {d}")
 
     def _queue_remove(self):
         row = self.queue_list.currentRow()
