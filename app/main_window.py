@@ -247,13 +247,12 @@ class MainWindow(QMainWindow):
 
         self.srt_on = bool(config.get_setting("srt_on", True))
         # Phụ đề dùng để CHIA CẢNH dựng video. User chọn 1 trong 2 mục đích, app
-        # xuất 1 file <tên>.srt. Mỗi block ≥ SRT_MIN_DUR và ≤ trần riêng từng mode:
-        #   mode 0 = Video ảnh tĩnh  → mỗi cảnh < 8s  (ảnh cần mô tả chi tiết)
-        #   mode 1 = Clip từ ảnh     → mỗi cảnh < 10s (≈ 1 clip Veo3)
+        # xuất 1 file <tên>.srt. Số giây "Mỗi cảnh" do user TỰ ĐẶT (không còn ép trần
+        # 8/10s): số đó vừa là độ dài đích vừa là TRẦN — mỗi cảnh ≤ số đó, ≥ SRT_MIN_DUR.
+        # Mode chỉ để (a) nhớ độ dài riêng theo mục đích, (b) gợi ý 'kind' cho AI chia cảnh.
         self.srt_mode_idx = int(config.get_setting("srt_mode_idx", 0))
         self.SRT_MIN_DUR = 4.0
-        self.SRT_MAX_IMG = 8.0   # trần cảnh ảnh tĩnh
-        self.SRT_MAX_VID = 10.0  # trần cảnh clip Veo3
+        self.SRT_SPIN_MAX = 600   # trần ô chọn giây (xem như không giới hạn thực tế)
         self.srt_img_dur = float(config.get_setting("srt_img_dur", 7.0))
         self.srt_vid_dur = float(config.get_setting("srt_vid_dur", 8.0))
 
@@ -512,7 +511,7 @@ class MainWindow(QMainWindow):
         self.srt_cb.setChecked(self.srt_on)
         self.srt_cb.setToolTip(
             "Xuất 1 file <tên>.srt chia cảnh để dựng video.\n"
-            "Mọi block đều dài 4–10 giây (không quá ngắn, không vượt giới hạn Veo3).")
+            "Mỗi cảnh ≥ 4 giây và ≤ số giây bạn đặt ở ô 'Mỗi cảnh' (tùy ý).")
         self.srt_cb.toggled.connect(self._toggle_srt)
 
         # Mục đích: 0 = Video ảnh tĩnh, 1 = Clip từ ảnh (tạo ảnh trước → tạo clip).
@@ -529,7 +528,8 @@ class MainWindow(QMainWindow):
         self.srt_dur_spin = QSpinBox()
         self.srt_dur_spin.setSuffix(" s")
         self.srt_dur_spin.setToolTip(
-            "Độ dài đích mỗi cảnh. Ảnh tĩnh: 4–8s. Clip từ ảnh: 4–10s.")
+            "Độ dài MỖI CẢNH (giây) — đặt bao nhiêu tùy ý (4s đến 600s).\n"
+            "Mỗi cảnh tối đa bằng số này, tối thiểu 4s. Nhớ riêng theo từng mục đích.")
         self.srt_dur_spin.valueChanged.connect(self._set_srt_dur)
         self._sync_srt_spin_range()  # đặt khoảng + giá trị theo mode đang chọn
 
@@ -1413,15 +1413,14 @@ class MainWindow(QMainWindow):
         return self.srt_img_dur if self.srt_mode_idx == 0 else self.srt_vid_dur
 
     def _cur_srt_max(self) -> float:
-        """Trần độ dài 1 cảnh theo mode (ảnh <8s, clip <10s)."""
-        return self.SRT_MAX_IMG if self.srt_mode_idx == 0 else self.SRT_MAX_VID
+        """Trần độ dài 1 cảnh = ĐÚNG số giây user đặt (mỗi cảnh tối đa bằng số này)."""
+        return self._cur_srt_dur()
 
     def _sync_srt_spin_range(self):
-        """Đặt lại khoảng cho ô giây theo trần của mode đang chọn, kẹp giá trị."""
-        hi = int(self._cur_srt_max())
+        """Đặt khoảng ô giây = [4s, SRT_SPIN_MAX] (user tự đặt bao nhiêu tùy ý)."""
         self.srt_dur_spin.blockSignals(True)
-        self.srt_dur_spin.setRange(int(self.SRT_MIN_DUR), hi)
-        self.srt_dur_spin.setValue(min(int(self._cur_srt_dur()), hi))
+        self.srt_dur_spin.setRange(int(self.SRT_MIN_DUR), int(self.SRT_SPIN_MAX))
+        self.srt_dur_spin.setValue(int(self._cur_srt_dur()))
         self.srt_dur_spin.blockSignals(False)
 
     def _on_srt_mode(self, idx):
