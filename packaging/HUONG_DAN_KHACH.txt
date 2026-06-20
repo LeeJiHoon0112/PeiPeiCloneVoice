@@ -12,18 +12,21 @@ YÊU CẦU MÁY:
 ------------------------------------------------------
 CHỈ 2 BƯỚC
 ------------------------------------------------------
-  BƯỚC 1: Giải nén thư mục phần mềm ra ổ đĩa (vd: D:\PeiPeiCloneVoice).
-          ⚠️ Tránh đặt trong "Program Files" (thư mục có quyền hạn chế).
+  BƯỚC 1: Mở phần mềm:
+          • Nếu bạn nhận file "PeiPeiCloneVoice_Setup.exe": bấm đúp → Next → Install.
+            Cài xong có ICON ngoài Desktop → bấm icon đó để mở (bỏ qua nói về run.bat).
+          • Nếu bạn nhận file .ZIP: giải nén ra ổ đĩa (vd D:\PeiPeiCloneVoice),
+            ⚠️ tránh "Program Files", rồi bấm đúp  run.bat .
 
-  BƯỚC 2: Bấm đúp chạy:  run.bat
-          • LẦN ĐẦU: cửa sổ đen tự cài đặt + tải về (vài GB) — cứ để chạy,
-            chỉ làm 1 lần, có thể mất 10–30 phút tuỳ mạng.
+  BƯỚC 2: Lần đầu mở:
+          • Cửa sổ đen tự cài đặt + tải về (vài GB) — cứ để chạy, chỉ 1 lần,
+            có thể mất 10–30 phút tuỳ mạng.
           • Sau đó hiện hộp "Kích hoạt bản quyền":
               - Bấm "📋 Copy" lấy MÃ MÁY → gửi người bán để nhận LICENSE KEY.
               - Dán LICENSE KEY vào ô → bấm "Kích hoạt".
           • Xong! App mở ra dùng được.
 
-  Những lần sau: chỉ cần bấm  run.bat  là vào thẳng.
+  Những lần sau: chỉ cần bấm icon Desktop (hoặc run.bat) là vào thẳng.
 
 ------------------------------------------------------
 LƯU Ý

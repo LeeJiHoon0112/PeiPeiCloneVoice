@@ -25,13 +25,23 @@ Bấm đúp **`build.bat`** (ở thư mục gốc). Nó sẽ:
 > `release/` lúc này ~25–30MB (chưa có torch). Torch + thư viện được `run.bat` tự cài
 > vào `release/python/` ở **lần đầu khách chạy** (cùng lúc tải model). Phân phối nhẹ.
 
-## 3. Giao cho khách
-- Nén **`release/`** thành `.zip` → gửi link tải (Google Drive...). Khách giải nén → `run.bat`.
-- "Pro" hơn: đóng **installer** bằng [Inno Setup](https://jrsoftware.org/isdl.php) (free):
-  `[Files]` trỏ vào `release\*`, tạo shortcut chạy `run.bat`.
-- (Tuỳ chọn) muốn bản "to nhưng chạy ngay, KHÔNG cài lần đầu": chạy `release\setup.bat`
-  một lần trên máy build để cài sẵn torch vào `release\python`, rồi mới nén. Khi đó .zip
-  ~3–4GB nhưng khách giải nén là chạy luôn (chỉ còn tải model).
+## 3. Giao cho khách — chọn 1 trong 2
+**A) Installer chuyên nghiệp (KHUYÊN):** ra 1 file `Setup.exe` (khách bấm Next → cài → có
+icon Desktop).
+   1. Cài **Inno Setup 6** (MIỄN PHÍ kể cả bán hàng — banner "purchase a license" chỉ là
+      mời quyên góp tự nguyện): https://jrsoftware.org/isdl.php
+   2. Chạy **`packaging\build_installer.bat`** → ra **`build\PeiPeiCloneVoice_Setup.exe`** (~14MB).
+      (Hoặc mở `packaging\installer.iss` bằng Inno Setup rồi bấm Build/Compile.)
+   3. Gửi khách `Setup.exe` (kèm key). Khách: bấm đúp → Next → Install → icon Desktop → chạy.
+   - Cài PER-USER vào `%LOCALAPPDATA%\Programs\PeiPeiCloneVoice` (ghi được, KHÔNG cần Admin).
+   - (Tuỳ chọn) thêm `packaging\icon.ico` → build.bat tự đưa vào `release\`, installer + icon
+     dùng nó. Không có cũng chạy (icon mặc định).
+
+**B) Gói .ZIP đơn giản:** nén **`release/`** thành `.zip` → khách giải nén → bấm `run.bat`.
+
+- (Tuỳ chọn) bản "to nhưng chạy ngay, KHÔNG cài lần đầu": chạy `release\setup.bat` một lần
+  trên máy build để cài sẵn torch vào `release\python`, rồi mới nén/đóng installer. Khi đó
+  gói ~3–4GB nhưng khách chạy là dùng luôn (chỉ còn tải model).
 
 ## 4. ⚠️ Ràng buộc: Python 3.13
 - `.pyd` gắn chặt **Python 3.13 (cp313, 64-bit)** — đã kèm đúng Python nhúng 3.13.9 nên khách OK.
@@ -49,7 +59,8 @@ Bấm đúp **`build.bat`** (ở thư mục gốc). Nó sẽ:
 - [ ] Test `release/` trên máy/thư mục SẠCH: chạy `run.bat` → tự cài → hiện hộp kích hoạt →
       dán key thật → vào app → tạo thử 1 giọng.
 - [ ] Đã tạo sẵn key (product `peipei-voice`) để giao khách.
-- [ ] (Nếu dùng .zip) nén cả thư mục `release/`, gửi kèm `HUONG_DAN_KHACH.txt`.
+- [ ] Đóng gói: chạy `packaging\build_installer.bat` → `build\PeiPeiCloneVoice_Setup.exe`
+      (hoặc nén `release/` thành .zip). Test thử trên thư mục/máy sạch.
 
 ## 7. Bảo vệ tới đâu?
 - `.pyd` là mã máy native (Nuitka) → khó dịch ngược hơn `.pyc` rất nhiều.
