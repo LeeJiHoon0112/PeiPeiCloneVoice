@@ -52,8 +52,14 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"; WorkingDir: "
 ; Hoi mo app ngay sau khi cai (lan dau app tu cai deps + tai model).
 Filename: "{app}\{#MyAppExe}"; Description: "Mo PeiPei Clone Voice ngay"; Flags: nowait postinstall skipifsilent shellexec
 
+[InstallDelete]
+; Khi CAI DE (update): xoa moc .setup_done -> lan chay sau setup.bat tu kiem lai deps
+; (torch/model da co san -> pip chi kiem nhanh + cai THEM lib moi neu ban update can).
+; KHONG xoa torch/model/user_data -> giu nguyen, khach khong phai tai lai vai GB.
+Type: files; Name: "{app}\.setup_done"
+
 [UninstallDelete]
-; Khi go cai: xoa cac thu nang TU SINH (deps + model) cho sach. GIU user_data (giong da tao).
+; Khi GO CAI: xoa cac thu nang TU SINH (deps + model) cho sach. GIU user_data (giong da tao).
 Type: filesandordirs; Name: "{app}\models"
 Type: filesandordirs; Name: "{app}\python\Lib\site-packages"
 Type: files; Name: "{app}\.setup_done"

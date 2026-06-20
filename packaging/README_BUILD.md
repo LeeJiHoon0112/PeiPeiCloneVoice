@@ -62,7 +62,22 @@ icon Desktop).
 - [ ] Đóng gói: chạy `packaging\build_installer.bat` → `build\PeiPeiCloneVoice_Setup.exe`
       (hoặc nén `release/` thành .zip). Test thử trên thư mục/máy sạch.
 
-## 7. Bảo vệ tới đâu?
+## 7. Ra bản CẬP NHẬT (update) cho khách
+Khi sửa code và muốn giao bản mới — khách **KHÔNG phải tải lại torch/model (vài GB)**, chỉ
+tải lại `Setup.exe` (~14MB) cài đè:
+1. Sửa code xong → tăng version ở **2 chỗ cho khớp**:
+   - `app/config.py` → `APP_VERSION` (vd "1.0.1").
+   - `packaging/installer.iss` → `#define MyAppVersion "1.0.1"`.
+2. `build.bat` → `packaging\build_installer.bat` → ra `Setup.exe` mới.
+3. Gửi khách `Setup.exe` mới (cùng link Google Drive cũng được).
+4. Khách: bấm đúp `Setup.exe` → cài đè vào đúng chỗ cũ.
+   - **GIỮ NGUYÊN**: torch, model, giọng đã tạo (user_data), license đã kích hoạt.
+   - **CHỈ THAY**: code (`app.pyd` + `main.py`).
+   - Installer tự xoá `.setup_done` → lần mở sau `setup.bat` kiểm nhanh deps (torch/model đã
+     có nên bỏ qua) + cài THÊM lib mới nếu bản update cần. Vài chục giây, 1 lần.
+> Khach KHONG dung duoc `update.bat` (do la `git pull` cho ban source/dev, khong kem trong ban ban).
+
+## 8. Bảo vệ tới đâu?
 - `.pyd` là mã máy native (Nuitka) → khó dịch ngược hơn `.pyc` rất nhiều.
 - Check license trong `app.pyd` ở **2 lớp**: cổng `main.py` gọi vào + **chốt 2 trong
   `MainWindow.__init__`** (không gỡ được vì đã biên dịch).

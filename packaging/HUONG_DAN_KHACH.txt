@@ -29,6 +29,15 @@ CHỈ 2 BƯỚC
   Những lần sau: chỉ cần bấm icon Desktop (hoặc run.bat) là vào thẳng.
 
 ------------------------------------------------------
+CẬP NHẬT BẢN MỚI
+------------------------------------------------------
+  Khi có bản mới, người bán gửi file Setup.exe mới. Bạn chỉ cần:
+    • Bấm đúp Setup.exe mới → cài đè (vào đúng chỗ cũ).
+    • GIỮ NGUYÊN: giọng đã tạo, license đã kích hoạt, model đã tải.
+    • Không phải tải lại vài GB — cập nhật rất nhanh.
+  (Lần mở đầu sau cập nhật có thể hiện cửa sổ đen kiểm tra vài chục giây — bình thường.)
+
+------------------------------------------------------
 LƯU Ý
 ------------------------------------------------------
   • Lần đầu tải khá nặng (thư viện ~2.5GB + model ~4.7GB) — chỉ tải 1 lần.
