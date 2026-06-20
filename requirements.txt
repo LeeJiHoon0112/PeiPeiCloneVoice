@@ -16,6 +16,8 @@ librosa==0.11.0
 numpy
 accelerate
 pyloudnorm==0.2.0   # chuẩn hóa độ to (LUFS) cho audio xuất ra
+requests            # gọi server license (activate/refresh/version)
+cryptography        # xác minh chữ ký Ed25519 của license
 
 # --- Runtime extras cho audio tokenizer (cài bằng --no-deps trong install.bat) ---
 # Không để pip tự kéo dependencies của chúng (dễ xung đột với transformers/omnivoice).

@@ -82,13 +82,26 @@ def main():
         return 0
     app._single_lock = _lock  # giữ tham chiếu để khóa sống suốt phiên
 
-    # Nếu máy này đã "ghi nhớ" và còn khớp mật khẩu hiện hành → bỏ qua đăng nhập.
-    from app import auth
-    if not auth.is_remembered():
-        # Màn hình đăng nhập: sai/đóng thì thoát, không vào app.
-        login = LoginDialog()
-        if login.exec_() != QDialog.Accepted:
-            return 0
+    from app import config
+    if config.LICENSE_ENABLED:
+        # ----- CỔNG BẢN QUYỀN (bản bán .exe): kích hoạt license -----
+        # Thay cho đăng nhập mật khẩu vì khách mua không có mật khẩu của tác giả.
+        # Gọi refresh() để gia hạn token + bắt thu hồi (offline thì tự bỏ qua).
+        from app import license_client
+        license_client.refresh()
+        st = license_client.check()
+        if st["status"] not in ("VALID", "GRACE"):
+            from app.license_dialog import LicenseDialog
+            if LicenseDialog().exec_() != QDialog.Accepted:
+                return 0                       # không kích hoạt được → thoát
+    else:
+        # ----- DEV / bản tự do: đăng nhập bằng mật khẩu như cũ -----
+        # Nếu máy này đã "ghi nhớ" và còn khớp mật khẩu hiện hành → bỏ qua đăng nhập.
+        from app import auth
+        if not auth.is_remembered():
+            login = LoginDialog()
+            if login.exec_() != QDialog.Accepted:
+                return 0
 
     win = MainWindow()
     win.show()

@@ -18,6 +18,19 @@ USER_DATA_DIR = os.path.join(APP_DIR, "user_data")
 VOICES_DIR = os.path.join(USER_DATA_DIR, "voices")
 OUTPUTS_DIR = os.path.join(USER_DATA_DIR, "outputs")
 
+# ----------------------------------------------------- Bản quyền (license)
+# Hệ thống license hybrid (ký số Ed25519), dùng chung 1 server cho nhiều tool.
+#   LICENSE_ENABLED = True  -> bản BÁN (.exe build Nuitka): bắt kích hoạt license.
+#                   = False -> chạy TỰ DO khi DEV (bỏ qua license, dùng đăng nhập cũ).
+# 🔴 ĐANG BẬT (True) — bản bán: bắt kích hoạt license. Đổi về False nếu muốn DEV chạy tự do.
+LICENSE_ENABLED = True
+LICENSE_SERVER_URL = "https://yt-license-server.onrender.com"
+APP_VERSION = "1.0.0"   # cho tính năng tự báo bản mới qua /version
+# Token license + mốc chống lùi đồng hồ lưu ở %APPDATA%\PeiPeiCloneVoice (NẰM NGOÀI
+# thư mục cài → sống qua cập nhật/cài lại). TUYỆT ĐỐI không commit các file này.
+DATA_DIR = os.path.join(os.environ.get("APPDATA") or USER_DATA_DIR, "PeiPeiCloneVoice")
+LICENSE_FILE = os.path.join(DATA_DIR, "license.json")
+
 # Thư mục model nằm trong app (gói sẵn hoặc nơi HuggingFace tải về) — portable theo GitHub
 MODELS_DIR = os.path.join(APP_DIR, "models")
 HF_CACHE_DIR = os.path.join(MODELS_DIR, "hf-cache")
