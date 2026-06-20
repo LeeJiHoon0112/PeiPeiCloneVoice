@@ -213,6 +213,15 @@ def _safe_filename(name: str) -> str:
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        # Chốt bản quyền lớp 2 (NẰM TRONG .pyd đã biên dịch — không gỡ được kể cả khi
+        # khách sửa main.py để bỏ qua cổng license). Bỏ qua khi DEV (LICENSE_ENABLED=False).
+        if config.LICENSE_ENABLED:
+            from . import license_client
+            if license_client.check()["status"] not in ("VALID", "GRACE"):
+                from PyQt5.QtWidgets import QMessageBox
+                QMessageBox.critical(None, "Bản quyền",
+                                     "Phần mềm chưa được kích hoạt bản quyền.")
+                raise SystemExit(0)
         self.setWindowTitle("PeiPei Clone Voice")
         self.resize(1080, 720)
         self.setMinimumSize(960, 600)

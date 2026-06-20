@@ -23,6 +23,16 @@ _*.py
 # Ghi chú nội bộ khi phát triển (không cần cho người dùng)
 context.md
 
+# Output đóng gói / che mã (không commit — build trên máy, có thể nặng GB)
+build/
+build_obf/
+dist/
+release/
+*.exe
+*.pyd
+pyarmor_runtime*/
+.pyarmor/
+
 # IDE / OS
 .vscode/
 .idea/

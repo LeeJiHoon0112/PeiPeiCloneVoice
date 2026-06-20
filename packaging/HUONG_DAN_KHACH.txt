@@ -1,0 +1,41 @@
+========================================================
+  PEIPEI CLONE VOICE — HƯỚNG DẪN CÀI ĐẶT & KÍCH HOẠT
+========================================================
+
+YÊU CẦU MÁY:
+  • Windows 10/11 (64-bit)
+  • Python 3.13 (64-bit) — tải tại:
+        https://www.python.org/downloads/release/python-3139/
+        ⚠️ Khi cài nhớ TÍCH "Add Python to PATH".
+  • Khuyên dùng card màn hình NVIDIA (GeForce/RTX) để chạy nhanh.
+    (Không có NVIDIA vẫn chạy được nhưng RẤT chậm.)
+  • Kết nối Internet (lần đầu tải model ~4.7GB + kích hoạt bản quyền).
+
+------------------------------------------------------
+BƯỚC 1 — CÀI ĐẶT (chỉ làm 1 lần)
+------------------------------------------------------
+  1. Giải nén thư mục phần mềm ra ổ đĩa (vd: D:\PeiPeiCloneVoice).
+     ⚠️ Tránh đặt trong thư mục có quyền hạn chế (như "Program Files").
+  2. Bấm đúp chạy:  install.bat
+     → Nó tạo môi trường + tải thư viện (PyTorch ~2.5GB). Đợi tới khi báo "DONE".
+
+------------------------------------------------------
+BƯỚC 2 — MỞ APP & KÍCH HOẠT BẢN QUYỀN
+------------------------------------------------------
+  1. Bấm đúp chạy:  run.bat
+  2. Lần đầu hiện hộp thoại "Kích hoạt bản quyền":
+       • Bấm "📋 Copy" để lấy MÃ MÁY của bạn.
+       • Gửi MÃ MÁY đó cho người bán để nhận LICENSE KEY.
+       • Dán LICENSE KEY vào ô, bấm "Kích hoạt".
+  3. Kích hoạt xong, app tự mở. Lần sau mở "run.bat" sẽ vào thẳng,
+     không hỏi lại (chỉ cần thỉnh thoảng có mạng để app tự gia hạn).
+
+------------------------------------------------------
+LƯU Ý
+------------------------------------------------------
+  • Lần ĐẦU mở app sẽ tải model AI (~4.7GB) — đợi một lúc, chỉ tải 1 lần.
+  • Mỗi license dùng giới hạn số máy. Đổi máy mới có thể cần liên hệ người bán.
+  • Cần kết nối mạng định kỳ (vài ngày/lần) để app xác thực lại bản quyền.
+  • Lỗi cài đặt? Chụp màn hình cửa sổ đen (console) gửi người bán để được hỗ trợ.
+
+Chúc bạn dùng vui vẻ!
