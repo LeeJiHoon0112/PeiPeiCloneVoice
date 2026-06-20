@@ -59,10 +59,16 @@ def main():
 
     from PyQt5.QtWidgets import QApplication, QDialog, QMessageBox
     from PyQt5.QtCore import QSharedMemory
+    from PyQt5.QtGui import QIcon
     from app.login_dialog import LoginDialog
     from app.main_window import MainWindow
 
     app = QApplication(sys.argv)
+
+    # Icon cho cửa sổ app + taskbar (nếu có icon.ico cạnh main.py).
+    _icon = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
+    if os.path.exists(_icon):
+        app.setWindowIcon(QIcon(_icon))
 
     # ----- CHỈ CHO MỞ 1 APP (single-instance) -----
     # Mở 2 app cùng lúc làm nạp 2 lần model → cạn VRAM (RTX 4060 chỉ 8GB) →
