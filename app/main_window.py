@@ -1808,7 +1808,7 @@ class MainWindow(QMainWindow):
         cur = self.text_edit.textCursor()
         sel = cur.selectedText().strip() if cur.hasSelection() else ""
         sel = sel.replace("\u2029", "\n")   # QTextEdit: U+2029 = ngat doan
-        sents = _split_sentences(sel or self.text_edit.toPlainText())
+        sents = _split_sentences(sel or self.text_edit.toPlainText(), self._lang_code())
         if not sents:
             return self._error("Hãy nhập văn bản cần đọc.")
         sentence = sents[0]

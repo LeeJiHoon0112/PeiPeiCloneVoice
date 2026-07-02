@@ -24,6 +24,24 @@ def _detect_lang(text: str) -> str:
     return "vi" if _VI_RE.search(text or "") else "en"
 
 
+# Chữ CJK (Nhật/Trung/Hàn): việc "đọc số thành chữ" chỉ có bảng cho vi/en → nếu áp
+# lên văn bản CJK sẽ nhét chữ tiếng Anh ("2024" → "two thousand...") vào giữa chữ
+# Nhật, vừa sai phát âm vừa làm lệch độ dài/timing. → phát hiện để BỎ QUA (no-op).
+_CJK_RE = re.compile(
+    "[぀-ヿ㐀-䶿一-鿿豈-﫿가-힣ᄀ-ᇿ㄰-㆏ｦ-ﾟ]"
+)
+
+
+def _looks_cjk(text: str) -> bool:
+    if not text:
+        return False
+    cjk = len(_CJK_RE.findall(text))
+    if cjk == 0:
+        return False
+    non_space = sum(1 for c in text if not c.isspace())
+    return non_space > 0 and cjk / non_space >= 0.30
+
+
 # ------------------------------------------------------------- đọc số: Tiếng Việt
 _VI_DIGITS = ["không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín"]
 _VI_SCALE = ["", "nghìn", "triệu", "tỉ"]
@@ -221,6 +239,12 @@ def normalize_text(text: str, language: str | None = None) -> str:
     language: "vi" | "en" | None (tự đoán). Trả về văn bản đã chuẩn hóa.
     """
     if not text or not text.strip():
+        return text
+    # Chỉ chuẩn hóa số/ngày cho vi/en. Ngôn ngữ khác được chọn rõ (Nhật/Trung/Hàn...)
+    # hoặc văn bản trông là CJK → GIỮ NGUYÊN, tránh nhét chữ số kiểu Anh vào.
+    if language and language not in ("vi", "en"):
+        return text
+    if language is None and _looks_cjk(text):
         return text
     lang = language if language in ("vi", "en") else _detect_lang(text)
     out = text

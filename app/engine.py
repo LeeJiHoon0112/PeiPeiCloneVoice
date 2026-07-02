@@ -34,6 +34,113 @@ _SPLIT_CONJUNCTIONS = [
     "trong khi", "cho nên", "rồi", "hoặc",
 ]
 
+# ── Hỗ trợ chữ viết KHÔNG dùng dấu cách giữa từ (Nhật/Trung/Hàn...) ────────────
+# Toàn bộ splitter cũ giả định "từ = cụm ngăn bởi dấu cách" + dấu câu Latin. Với
+# tiếng Nhật/Trung (chữ liền, dấu full-width, KHÔNG có khoảng trắng theo sau) thì
+# mọi phép tách đó vô hiệu → cả đoạn thành 1 "câu"/1 atom không băm được → cảnh
+# SRT dài bằng cả file, vượt số giây người dùng chọn. Ta nhận biết chữ CJK để
+# chuyển sang cắt theo KÝ TỰ và dùng dấu câu full-width làm điểm ngắt.
+_CJK_RE = re.compile(
+    "[぀-ヿ㐀-䶿一-鿿豈-﫿"
+    "가-힣ᄀ-ᇿ㄰-㆏ｦ-ﾟ]"
+)
+# Ngôn ngữ chữ liền — dùng làm gợi ý CƯỠNG BỨC khi có mã ngôn ngữ rõ ràng.
+_CJK_LANGS = {"ja", "zh", "ko", "zh-cn", "zh-tw", "zh-hans", "zh-hant", "yue"}
+# Dấu kết câu (full & half) — trong CJK KHÔNG có khoảng trắng theo sau.
+_CJK_ENDERS = "。！？!?…"
+# Dấu ngắt giữa câu (kể cả dấu phẩy full-width) để chia cảnh câu dài.
+_CJK_BREAKS = "、，。；：！？!?…·・"
+# Dấu đóng ngoặc/nháy: nuốt vào CUỐI câu thay vì rớt sang câu sau.
+_CJK_CLOSERS = "」』）)】〉》”’"
+
+
+def _is_cjk(text: str, lang: str | None = None) -> bool:
+    """True nếu văn bản thuộc chữ viết KHÔNG dùng dấu cách giữa từ (Nhật/Trung/Hàn).
+
+    Ưu tiên mã ngôn ngữ nếu có; nếu không (người dùng để 'Tự động') thì TỰ NHẬN
+    DIỆN theo tỉ lệ ký tự CJK. Tiếng Việt/Anh lỡ trích 1 chữ Hán vẫn trả về False.
+    """
+    if lang and lang.lower() in _CJK_LANGS:
+        return True
+    if not text:
+        return False
+    cjk = len(_CJK_RE.findall(text))
+    if cjk == 0:
+        return False
+    non_space = sum(1 for c in text if not c.isspace())
+    if non_space <= 0:
+        return False
+    # (a) mật độ chữ CJK cao → chắc chắn là chữ CJK.
+    if cjk / non_space >= 0.30:
+        return True
+    # (b) văn bản GẦN NHƯ không có dấu cách mà vẫn chứa chữ CJK (vd câu Nhật lẫn URL,
+    #     tên romaji, nhiều chữ số) → vẫn coi là chữ CJK. Nếu không, cả câu bị xem là
+    #     "1 từ khổng lồ" (không dấu cách) → KHÔNG cắt được → cảnh vượt trần số giây.
+    spaces = sum(1 for c in text if c == " ")
+    return spaces <= non_space * 0.05
+
+
+def _char_based(text: str, lang: str | None = None) -> bool:
+    """True nếu nên cắt theo KÝ TỰ: chữ CJK và HẦU NHƯ không có dấu cách giữa từ
+    (Nhật/Trung). Tiếng Hàn tuy là CJK nhưng CÓ dấu cách giữa từ → vẫn cắt theo TỪ."""
+    if not _is_cjk(text, lang):
+        return False
+    body = "".join(text.split())
+    if not body:
+        return False
+    spaces = sum(1 for c in text if c == " ")
+    return spaces <= len(body) * 0.05
+
+
+def _join_texts(parts) -> str:
+    """Nối các đoạn text thành 1 cảnh. Nếu TẤT CẢ đều là chữ CJK không-dấu-cách →
+    nối SÁT (không chèn khoảng trắng thừa vào phụ đề Nhật/Trung); ngược lại nối
+    bằng khoảng trắng như thường (giữ nguyên hành vi tiếng Việt/Anh)."""
+    parts = [p.strip() for p in (parts or []) if p and p.strip()]
+    if not parts:
+        return ""
+    # Trong ngữ cảnh chữ CJK, mọi mảnh đều là TOKEN LIỀN (không có dấu cách bên trong):
+    # cụm chữ CJK, dấu câu ('。', '……'), hoặc cụm ASCII (URL, tên romaji, chữ số) vốn
+    # dính liền trong câu gốc → phải nối SÁT, không chèn dấu cách (nếu không phụ đề
+    # Nhật/Trung ra 'りません 。' hay '西暦 2024 年'). Chỉ cần MỘT mảnh có dấu cách bên
+    # trong ⇒ đó là cụm nhiều-từ Latin (vi/en) ⇒ nối bằng dấu cách như thường.
+    has_cjk = any(_char_based(p) for p in parts)
+    any_multiword = any(" " in p for p in parts)
+    sep = "" if (has_cjk and not any_multiword) else " "
+    return sep.join(parts).strip()
+
+
+def _split_cjk_sentences(line: str) -> list[str]:
+    """Tách câu cho chữ CJK: cắt SAU dấu kết câu 。！？!?… (và '.' không phải số
+    thập phân), gộp cụm dấu liên tiếp, nuốt dấu đóng ngoặc/nháy liền sau; KHÔNG
+    đòi khoảng trắng theo sau (điều mà tiếng Nhật/Trung không bao giờ có)."""
+    out: list[str] = []
+    buf: list[str] = []
+    n = len(line)
+    i = 0
+    while i < n:
+        ch = line[i]
+        buf.append(ch)
+        is_end = ch in _CJK_ENDERS
+        if ch == "." and not is_end:
+            prev = line[i - 1] if i > 0 else ""
+            nxt = line[i + 1] if i + 1 < n else ""
+            if not (prev.isdigit() and nxt.isdigit()):   # bỏ qua số thập phân "3.14"
+                is_end = True
+        if is_end:
+            j = i + 1
+            while j < n and line[j] in (_CJK_ENDERS + "."):   # gộp "!?", "。。", "..."
+                buf.append(line[j]); j += 1
+            while j < n and line[j] in _CJK_CLOSERS:           # nuốt 」』）) vào cuối câu
+                buf.append(line[j]); j += 1
+            out.append("".join(buf)); buf = []
+            i = j
+            continue
+        i += 1
+    if buf:
+        out.append("".join(buf))
+    return out
+
 
 def _split_points(text: str) -> list[int]:
     """Tìm các vị trí (chỉ số ký tự) tốt để tách 1 câu dài.
@@ -42,8 +149,13 @@ def _split_points(text: str) -> list[int]:
     Trả về danh sách vị trí cắt (sau khoảng trắng), đã sắp xếp.
     """
     points = set()
-    # 1) sau các dấu ngắt giữa câu
+    # 1) sau các dấu ngắt giữa câu (Latin: cần khoảng trắng theo sau)
     for m in re.finditer(r"[,;:—–]\s+", text):
+        points.add(m.end())
+    # 1b) CJK: cắt NGAY SAU cụm dấu ngắt/kết câu full-width — KHÔNG đòi khoảng
+    #     trắng (tiếng Nhật/Trung không bao giờ có). Đây là điểm cắt tự nhiên để
+    #     chia câu CJK dài thành cảnh, thay cho dấu phẩy Latin vốn không xuất hiện.
+    for m in re.finditer("[" + re.escape(_CJK_BREAKS) + "]+", text):
         points.add(m.end())
     # 2) trước các liên từ (đứng giữa câu, có khoảng trắng 2 bên)
     low = text.lower()
@@ -54,8 +166,15 @@ def _split_points(text: str) -> list[int]:
 
 
 def _word_chunks(text: str, nparts: int) -> list[str]:
-    """Chia đều text theo TỪ thành nparts mảnh (dự phòng khi không có dấu/liên từ)."""
+    """Chia đều text thành nparts mảnh (dự phòng khi không có dấu/liên từ).
+
+    Chữ CJK không có dấu cách → chia theo KÝ TỰ; còn lại chia theo TỪ như cũ."""
     import math
+    if _char_based(text):
+        if nparts <= 1 or len(text) <= 1:
+            return [text]
+        per = math.ceil(len(text) / nparts)
+        return [text[i:i + per] for i in range(0, len(text), per)]
     words = text.split()
     if nparts <= 1 or len(words) <= 1:
         return [text]
@@ -75,6 +194,7 @@ def _balanced_pieces(text: str, max_chars: float) -> list[str]:
     if total <= max_chars:
         return [text]
 
+    cjk = _char_based(text)     # chữ liền (Nhật/Trung) → cắt theo KÝ TỰ, không theo từ
     nparts = max(2, math.ceil(total / max_chars))
     target = total / nparts
 
@@ -115,7 +235,12 @@ def _balanced_pieces(text: str, max_chars: float) -> list[str]:
     # Mỗi mảnh nhiều-từ đảm bảo ≤ max_chars; từ đơn dài hơn max_chars đành để nguyên.
     safe: list[str] = []
     for p in pieces:
-        if len(p) > max_chars and len(p.split()) > 1:
+        if len(p) > max_chars and cjk:
+            # Chữ CJK không có dấu cách → cắt CỨNG theo KÝ TỰ để không mảnh nào vượt
+            # trần (đây là lớp chặn cuối, kể cả khi câu không có dấu ngắt nào).
+            step = max(1, int(max_chars))
+            safe.extend(p[k:k + step] for k in range(0, len(p), step))
+        elif len(p) > max_chars and len(p.split()) > 1:
             cur = ""
             for w in p.split():
                 if cur and len(cur) + 1 + len(w) > max_chars:
@@ -138,10 +263,14 @@ def _split_long_segment(text, start, end, max_dur):
     """
     dur = max(0.0, end - start)
     text = text.strip()
-    if dur <= max_dur or len(text.split()) <= 1:
+    # "Không thể cắt": chữ có dấu cách = 1 từ; chữ CJK (liền, không dấu cách) = 1 ký
+    # tự. Nếu dùng chung len(text.split())<=1 thì cả đoạn Nhật/Trung (không dấu cách)
+    # bị coi là "1 từ" → bỏ qua cắt → cảnh vượt trần. Tách theo loại chữ để sửa.
+    indivisible = (len(text) <= 1) if _char_based(text) else (len(text.split()) <= 1)
+    if dur <= max_dur or indivisible:
         return [{"text": text, "start": start, "end": end}]
 
-    # Số ký tự tương ứng max_dur giây (theo tốc độ đọc thật của câu này)
+    # Số ký tự tương ứng max_dur giây (theo tốc độ đọc THẬT của câu này, từ audio)
     cps = len(text) / dur if dur > 0 else len(text)
     max_chars = max(1.0, max_dur * cps)
 
@@ -228,7 +357,7 @@ def _dp_partition(atoms: list[dict], target: float,
         cues.append({
             "start": atoms[i]["start"],
             "end": atoms[j - 1]["end"],
-            "text": " ".join(a["text"] for a in atoms[i:j]).strip(),
+            "text": _join_texts([a["text"] for a in atoms[i:j]]),
         })
         i = j
     return cues
@@ -294,7 +423,7 @@ def cues_from_ai_groups(segments: list[dict], groups: list[list[int]],
             continue
         s = segments[g[0]]["start"]
         e = segments[g[-1]]["end"]
-        txt = " ".join((segments[i].get("text") or "").strip() for i in g).strip()
+        txt = _join_texts([(segments[i].get("text") or "") for i in g])
         raw.append({"start": float(s), "end": float(e), "text": txt,
                     "idx": list(g)})
 
@@ -326,11 +455,11 @@ def cues_from_ai_groups(segments: list[dict], groups: list[list[int]],
                 continue
             w, _ = min(cand, key=lambda x: x[1])
             if w == "prev":
-                fixed[j - 1]["text"] = (fixed[j - 1]["text"] + " " + fixed[j]["text"]).strip()
+                fixed[j - 1]["text"] = _join_texts([fixed[j - 1]["text"], fixed[j]["text"]])
                 fixed[j - 1]["end"] = fixed[j]["end"]
                 del fixed[j]
             else:
-                fixed[j]["text"] = (fixed[j]["text"] + " " + fixed[j + 1]["text"]).strip()
+                fixed[j]["text"] = _join_texts([fixed[j]["text"], fixed[j + 1]["text"]])
                 fixed[j]["end"] = fixed[j + 1]["end"]
                 del fixed[j + 1]
             changed = True
@@ -338,17 +467,26 @@ def cues_from_ai_groups(segments: list[dict], groups: list[list[int]],
     return fixed
 
 
-def _split_sentences(text: str) -> list[str]:
+def _split_sentences(text: str, lang: str | None = None) -> list[str]:
     """Tách văn bản thành các câu để chèn ngắt nghỉ giữa chúng.
 
     Tách theo dấu kết câu (. ! ? … 。！？) và xuống dòng. Giữ nguyên dấu câu.
+
+    - Chữ Latin (vi/en...): dấu kết câu PHẢI có khoảng trắng theo sau (để không phá
+      số thập phân "3.14" hay viết tắt "Mr.").
+    - Chữ CJK (Nhật/Trung/Hàn): dấu 。！？ KHÔNG bao giờ có khoảng trắng theo sau →
+      tách ngay sau dấu (nếu không cả đoạn thành 1 "câu" → 1 cảnh dài cả file).
     """
     out: list[str] = []
     for line in text.replace("\r", "\n").split("\n"):
         line = line.strip()
         if not line:
             continue
-        for chunk in re.split(r"(?<=[\.\!\?…。！？])\s+", line):
+        if _is_cjk(line, lang):
+            chunks = _split_cjk_sentences(line)
+        else:
+            chunks = re.split(r"(?<=[\.\!\?…。！？])\s+", line)
+        for chunk in chunks:
             chunk = chunk.strip()
             if chunk:
                 out.append(chunk)
@@ -699,7 +837,7 @@ class VoiceEngine:
         # Tách câu để (a) báo tiến độ % theo từng câu, (b) chèn ngắt nghỉ nếu cần.
         # Có nhiều câu → đọc từng câu rồi nối; chỉ chèn khoảng lặng khi pause_sec > 0.
         sr = self.sample_rate
-        sentences = _split_sentences(text)
+        sentences = _split_sentences(text, language)
         if len(sentences) > 1:
             total = len(sentences)
             gap_n = int(pause_sec * sr) if pause_sec and pause_sec > 0 else 0
