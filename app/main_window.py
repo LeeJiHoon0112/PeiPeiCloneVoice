@@ -272,10 +272,14 @@ class MainWindow(QMainWindow):
         self.srt_ai_provider = str(config.get_setting("srt_ai_provider", "gemini"))
         # Lưu key RIÊNG cho từng provider {provider: key} → giữ cả 3 loại cùng lúc.
         self.srt_ai_keys = dict(config.get_setting("srt_ai_keys", {}) or {})
-        # Tương thích bản cũ (chỉ có 1 key chung srt_ai_key) → đổ vào provider cũ.
+        # Tương thích bản cũ (chỉ có 1 key chung srt_ai_key) → đổ vào provider cũ, rồi XÓA HẲN
+        # khóa cũ (migrate 1 lần) — nếu không, key sẽ "hồi sinh" mỗi lần khởi động dù user đã xóa.
         _old_key = str(config.get_setting("srt_ai_key", ""))
-        if _old_key and not self.srt_ai_keys.get(self.srt_ai_provider):
-            self.srt_ai_keys[self.srt_ai_provider] = _old_key
+        if _old_key:
+            if not self.srt_ai_keys.get(self.srt_ai_provider):
+                self.srt_ai_keys[self.srt_ai_provider] = _old_key
+                config.set_setting("srt_ai_keys", self.srt_ai_keys)
+            config.delete_setting("srt_ai_key")
         # Model chọn riêng cho từng provider (dict {provider: model}); trống = mặc định.
         self.srt_ai_models = dict(config.get_setting("srt_ai_models", {}) or {})
         # Danh sách model lấy LIVE từ API, cache theo provider {provider: [model,...]}.
@@ -866,16 +870,23 @@ class MainWindow(QMainWindow):
             return
         added = 0
         for p in paths:
-            try:
-                with open(p, encoding="utf-8") as f:
-                    text = f.read().strip()
-            except Exception:
+            # utf-8-sig xử lý được cả UTF-8 CÓ và KHÔNG có BOM (tự bỏ BOM); nếu không phải
+            # UTF-8 thì thử cp1258 (ANSI tiếng Việt) rồi cp1252 — KHÔNG dùng errors='replace'
+            # (thà báo lỗi rõ còn hơn âm thầm thay chữ Việt bằng '�').
+            text, read_err = None, None
+            for enc in ("utf-8-sig", "cp1258", "cp1252"):
                 try:
-                    with open(p, encoding="utf-8-sig", errors="replace") as f:
+                    with open(p, encoding=enc) as f:
                         text = f.read().strip()
+                    break
+                except UnicodeError as e:
+                    read_err = e
                 except Exception as e:
-                    self._log(f"⚠ Không đọc được {os.path.basename(p)}: {e}")
-                    continue
+                    read_err = e
+                    break
+            if text is None:
+                self._log(f"⚠ Bỏ qua {os.path.basename(p)}: không đọc được ({read_err}).")
+                continue
             if not text:
                 self._log(f"⚠ Bỏ qua file rỗng: {os.path.basename(p)}")
                 continue
@@ -947,7 +958,7 @@ class MainWindow(QMainWindow):
         out_dir = dir_edit.text().strip() or self._dir_for_voice(voice)
         self._queue.append({"name": _safe_filename(name), "text": text,
                             "voice": voice, "out_dir": out_dir,
-                            "status": "wait"})
+                            "manual_dir": manual["on"], "status": "wait"})
         self._queue_refresh()
         self._log(f"Đã thêm kịch bản '{name}' vào hàng đợi → lưu tại: {out_dir}")
 
@@ -955,6 +966,8 @@ class MainWindow(QMainWindow):
         row = self.queue_list.currentRow()
         if not (0 <= row < len(self._queue)):
             return self._error("Hãy chọn 1 mục trong hàng đợi.")
+        if self._queue_running and self._queue[row]["status"] == "run":
+            return self._error("Mục đang chạy — không thể đổi giọng.")
         voices = [it["name"] for it in self.profiles.list()]
         if not voices:
             return self._error("Chưa có giọng nào. Tạo giọng ở tab Quản lý giọng trước.")
@@ -970,9 +983,12 @@ class MainWindow(QMainWindow):
         dl.addWidget(bb)
         if dlg.exec_() == QDialog.Accepted:
             nv = combo.currentText().strip()
+            old = self._queue[row]["voice"]
             self._queue[row]["voice"] = nv
-            # Đổi giọng -> cập nhật thư mục lưu theo thư mục đã nhớ của giọng mới.
-            self._queue[row]["out_dir"] = self._dir_for_voice(nv)
+            # Chỉ đổi thư mục lưu theo giọng mới khi giọng THỰC SỰ đổi VÀ user chưa tự chọn
+            # thư mục riêng cho mục này (tránh xóa mất thư mục user đã chỉ định).
+            if nv != old and not self._queue[row].get("manual_dir"):
+                self._queue[row]["out_dir"] = self._dir_for_voice(nv)
             self._queue_refresh()
 
     def _queue_set_dir(self):
@@ -980,6 +996,8 @@ class MainWindow(QMainWindow):
         row = self.queue_list.currentRow()
         if not (0 <= row < len(self._queue)):
             return self._error("Hãy chọn 1 mục trong hàng đợi.")
+        if self._queue_running and self._queue[row]["status"] == "run":
+            return self._error("Mục đang chạy — không thể đổi thư mục.")
         cur = (self._queue[row].get("out_dir")
                or self._dir_for_voice(self._queue[row].get("voice")))
         d = QFileDialog.getExistingDirectory(
@@ -988,16 +1006,23 @@ class MainWindow(QMainWindow):
         if not d:
             return
         self._queue[row]["out_dir"] = d
+        self._queue[row]["manual_dir"] = True   # user tự chọn → đừng bị đổi giọng ghi đè
         self._queue_refresh()
         self._log(f"Mục '{self._queue[row]['name']}' sẽ lưu vào: {d}")
 
     def _queue_remove(self):
         row = self.queue_list.currentRow()
-        if 0 <= row < len(self._queue):
-            if self._queue_running and self._queue[row]["status"] == "run":
-                return self._error("Không thể xóa mục đang chạy.")
-            del self._queue[row]
-            self._queue_refresh()
+        if not (0 <= row < len(self._queue)):
+            return
+        it = self._queue[row]
+        if self._queue_running:
+            if it["status"] == "run":
+                return self._error("Không thể xóa mục ĐANG chạy.")
+            # Vòng lặp job giữ tham chiếu tới dict trong 'targets' → đánh dấu để nó BỎ QUA,
+            # nếu không item vẫn bị đọc + xuất file dù đã xóa khỏi danh sách.
+            it["_removed"] = True
+        del self._queue[row]
+        self._queue_refresh()
 
     def _queue_clear(self):
         if self._queue_running:
@@ -1048,10 +1073,13 @@ class MainWindow(QMainWindow):
             _log = log or (lambda m: None)
             done_n, total = 0, len(targets)
             results = []
+            used_dirs = set()   # né trùng thư mục output giữa các item cùng tên trong lượt chạy
             for it in targets:
                 if self._queue_stop:
                     _log("Đã dừng hàng đợi theo yêu cầu.")
                     break
+                if it.get("_removed"):
+                    continue      # đã bị xóa khỏi hàng đợi trong lúc đang chạy → bỏ qua
                 it["status"] = "run"
                 # cập nhật UI list từ luồng nền là không an toàn tuyệt đối, nhưng
                 # chỉ đọc/sửa text -> dùng log để báo; refresh ở done.
@@ -1064,12 +1092,19 @@ class MainWindow(QMainWindow):
                     srt_text, _ = self._make_srt_text(segs, srt_cfg, _log)
                     # Mỗi kịch bản 1 thư mục con, NẰM TRONG thư mục riêng của giọng.
                     item_base = it.get("out_dir") or config.OUTPUTS_DIR
-                    sub = os.path.join(item_base, _safe_filename(it["name"]))
+                    bname = _safe_filename(it["name"])
+                    sub = os.path.join(item_base, bname)
+                    n = 2   # 2 kịch bản TRÙNG TÊN → tự thêm hậu tố _2, _3... để không ghi đè nhau
+                    while sub in used_dirs:
+                        sub = os.path.join(item_base, f"{bname}_{n}")
+                        n += 1
+                    used_dirs.add(sub)
+                    fbase = os.path.basename(sub)
                     os.makedirs(sub, exist_ok=True)
-                    wav_path = os.path.join(sub, _safe_filename(it["name"]) + ".wav")
+                    wav_path = os.path.join(sub, fbase + ".wav")
                     sf.write(wav_path, audio, sr)
                     if srt_text:
-                        with open(os.path.join(sub, _safe_filename(it["name"]) + ".srt"),
+                        with open(os.path.join(sub, fbase + ".srt"),
                                   "w", encoding="utf-8", newline="\n") as f:
                             f.write(srt_text)
                     it["status"] = "done"
@@ -1293,8 +1328,11 @@ class MainWindow(QMainWindow):
         """Bấm ↻: quét TẤT CẢ nhà cung cấp đã lưu key, lấy TOÀN BỘ model dùng được
         (đã lọc sạch) mỗi loại (luồng nền), cache lại để user tự chọn. Loại nào
         chưa có key thì bỏ qua."""
-        # Lưu key đang gõ (nếu có) trước khi quét.
-        self._save_ai_key(silent=True)
+        if self._task and self._task.isRunning():
+            return self._error("Đang có tác vụ khác chạy. Vui lòng đợi.")
+        # Lưu key đang gõ CHỈ KHI có — nếu ô key trống mà vẫn lưu sẽ XÓA MẤT key đã lưu.
+        if self.ai_key_edit.text().strip():
+            self._save_ai_key(silent=True)
         keys = {p: (self.srt_ai_keys.get(p) or "").strip() for p in scene_ai.PROVIDERS}
         have = {p: k for p, k in keys.items() if k}
         if not have:
@@ -1391,6 +1429,8 @@ class MainWindow(QMainWindow):
 
     def _test_ai(self):
         """Bấm 'Test': gọi API tí hon ở luồng nền, báo OK/lỗi."""
+        if self._task and self._task.isRunning():
+            return self._error("Đang có tác vụ khác chạy. Vui lòng đợi.")
         provider = self.srt_ai_provider
         key = self.ai_key_edit.text().strip()
         model = self._cur_ai_model()
@@ -1527,6 +1567,10 @@ class MainWindow(QMainWindow):
     # ----------------------------------------------------------- profiles
     def _refresh_profiles(self):
         items = self.profiles.list()
+        # GIỮ giọng đang chọn — nếu không, combo tự nhảy về giọng ĐẦU danh sách sau mỗi
+        # lần tạo/import/xóa → lần generate kế tiếp âm thầm dùng SAI giọng.
+        prev = self.profile_combo.currentText().strip()
+        self.profile_combo.blockSignals(True)
         self.profile_combo.clear()
         self.profile_list.clear()
         for it in items:
@@ -1536,6 +1580,11 @@ class MainWindow(QMainWindow):
             li = QListWidgetItem(label)
             li.setData(Qt.UserRole, it["name"])
             self.profile_list.addItem(li)
+        idx = self.profile_combo.findText(prev)
+        if idx >= 0:
+            self.profile_combo.setCurrentIndex(idx)
+        self.profile_combo.blockSignals(False)
+        self._on_voice_changed()      # đồng bộ lại thư mục tự-lưu theo giọng đang chọn
         if not items:
             self.profile_list.addItem("Chưa có giọng nào — tạo ở cột bên phải.")
         if hasattr(self, "btn_preview"):
@@ -1653,15 +1702,19 @@ class MainWindow(QMainWindow):
     def _srt_snapshot(self) -> dict:
         """Chụp lại cấu hình SRT ở MAIN THREAD để job nền dùng an toàn (không
         đụng widget từ luồng khác)."""
+        # min co giãn: khi "Mỗi cảnh" đặt nhỏ (max 4-5s) thì sàn 4s làm [min,max] bất khả
+        # thi → hạ sàn xuống max/2 để ràng buộc luôn khả thi (không sinh cảnh vi phạm vô lý).
+        _max = self._cur_srt_max()
         return {
             "on": self.srt_on,
             "kind": "image" if self.srt_mode_idx == 0 else "video",
             "target": self._cur_srt_dur(),
-            "min": self.SRT_MIN_DUR,
-            "max": self._cur_srt_max(),
+            "min": min(self.SRT_MIN_DUR, _max / 2.0),
+            "max": _max,
             "ai_on": self.srt_ai_on,
             "provider": self.srt_ai_provider,
-            "key": self._cur_ai_key(),
+            # Ưu tiên key ĐANG GÕ trong ô (chụp ở main thread nên an toàn); trống thì dùng key đã lưu.
+            "key": (self.ai_key_edit.text().strip() or self._cur_ai_key()),
             "model": self._cur_ai_model(),
         }
 
@@ -1674,6 +1727,8 @@ class MainWindow(QMainWindow):
         # Mặc định: offline (luôn có, làm phương án dự phòng).
         offline_cues = build_cues(segments, cfg["target"], cfg["min"], cfg["max"])
         if not (cfg["ai_on"] and cfg["key"].strip()):
+            if cfg["ai_on"]:
+                log("⚠ Bật 'Chia cảnh bằng AI' nhưng chưa có API key → dùng chia cảnh offline.")
             return _render_srt(offline_cues), False
         try:
             log(f"Đang gọi AI ({cfg['provider']}) để chia cảnh theo ý nghĩa...")
@@ -1688,7 +1743,11 @@ class MainWindow(QMainWindow):
             log(f"AI chia thành {len(cues)} cảnh.")
             return _render_srt(cues), True
         except Exception as e:
-            log(f"⚠ AI chia cảnh lỗi ({e}). Dùng cách chia offline.")
+            emsg = str(e)
+            k = (cfg.get("key") or "").strip()      # che API key nếu lỡ nằm trong thông báo lỗi
+            if k:
+                emsg = emsg.replace(k, "***")
+            log(f"⚠ AI chia cảnh lỗi ({emsg}). Dùng cách chia offline.")
             return _render_srt(offline_cues), False
 
     def _do_generate(self):
@@ -1738,7 +1797,8 @@ class MainWindow(QMainWindow):
                 srt_text, _ = self._make_srt_text(segs, srt_cfg, log or (lambda m: None))
                 return sr, audio, srt_text
 
-        self._run(job, self._on_generated, "Đang tạo giọng nói...", pass_progress=True)
+        self._run(job, self._on_generated, "Đang tạo giọng nói...",
+                  pass_log=True, pass_progress=True)
 
     def _preview_one_sentence(self):
         """Nghe thử nhanh CHỈ câu đầu (hoặc đoạn đang bôi đen) với thông số hiện tại

@@ -9,7 +9,7 @@ rem ============================================================
 
 net session >nul 2>&1
 if errorlevel 1 (
-  echo Dang xin quyen Administrator... (bam YES o hop thoai UAC)
+  echo Dang xin quyen Administrator... ^(bam YES o hop thoai UAC^)
   powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
   exit /b 0
 )

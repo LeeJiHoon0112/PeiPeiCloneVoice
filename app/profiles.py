@@ -17,7 +17,10 @@ from . import config
 def _safe_name(name: str) -> str:
     keep = "-_. ()[]"
     cleaned = "".join(c for c in name.strip() if c.isalnum() or c in keep or ord(c) > 127)
-    return cleaned.strip() or "voice"
+    # Bỏ dấu chấm/khoảng trắng ở HAI ĐẦU: Windows cấm thư mục kết thúc bằng '.' (giọng sẽ
+    # "tàng hình" do lệch tên), và chặn tên nguy hiểm như "." / ".." (ghi file ra ngoài voices_dir).
+    cleaned = cleaned.strip(" .")
+    return cleaned or "voice"
 
 
 def _as_prompt(obj):

@@ -16,14 +16,14 @@ rem ============================================================
 rem --- Tu xin quyen Admin (UAC) neu chua co, roi chay lai chinh no ---
 net session >nul 2>&1
 if errorlevel 1 (
-  echo Dang xin quyen Administrator... (bam YES o hop thoai UAC)
+  echo Dang xin quyen Administrator... ^(bam YES o hop thoai UAC^)
   powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
   exit /b 0
 )
 
 where nvidia-smi >nul 2>nul
 if errorlevel 1 (
-  echo [LOI] Khong tim thay nvidia-smi (driver NVIDIA?).
+  echo [LOI] Khong tim thay nvidia-smi ^(driver NVIDIA?^).
   pause
   exit /b 1
 )
@@ -44,7 +44,7 @@ echo Xung toi da: %MAXCLK% MHz  -^>  se khoa trong khoang %FLOOR%-%MAXCLK% MHz
 nvidia-smi -lgc %FLOOR%,%MAXCLK%
 if errorlevel 1 (
   echo.
-  echo [LOI] Khong khoa duoc xung (co the GPU/driver khong cho).
+  echo [LOI] Khong khoa duoc xung ^(co the GPU/driver khong cho^).
   echo Thu cap nhat driver NVIDIA moi nhat tai nvidia.com/Download.
   pause
   exit /b 1

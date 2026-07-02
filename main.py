@@ -92,9 +92,11 @@ def main():
     if config.LICENSE_ENABLED:
         # ----- CỔNG BẢN QUYỀN (bản bán .exe): kích hoạt license -----
         # Thay cho đăng nhập mật khẩu vì khách mua không có mật khẩu của tác giả.
-        # Gọi refresh() để gia hạn token + bắt thu hồi (offline thì tự bỏ qua).
+        # maybe_refresh() = refresh() ĐÃ BỌC try/except → lỗi mạng/proxy/token hỏng KHÔNG
+        # làm crash app lúc khởi động (trước đây refresh() trần có thể ném JSONDecodeError/
+        # KeyError → app 'chết' trước khi kịp hiện hộp kích hoạt).
         from app import license_client
-        license_client.refresh()
+        license_client.maybe_refresh()
         st = license_client.check()
         if st["status"] not in ("VALID", "GRACE"):
             from app.license_dialog import LicenseDialog

@@ -45,6 +45,7 @@ copy /y packaging\setup.bat release\ >nul
 copy /y packaging\run.bat release\ >nul
 copy /y packaging\HUONG_DAN_KHACH.txt release\ >nul
 if exist icon.ico copy /y icon.ico release\ >nul
+if exist packaging\icon.ico copy /y packaging\icon.ico release\ >nul
 
 echo [5/5] XONG. Thu muc ban: %SCRIPT_DIR%release\
 echo   - Co: python\ (Python nhung) + main.py + app.*.pyd + setup.bat + run.bat + huong dan.

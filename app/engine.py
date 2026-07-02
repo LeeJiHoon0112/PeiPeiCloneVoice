@@ -110,12 +110,21 @@ def _balanced_pieces(text: str, max_chars: float) -> list[str]:
     else:
         pieces = [text]
 
-    # An toàn TUYỆT ĐỐI: mảnh nào vẫn > max_chars (vd 1 vế dài, không dấu) → cắt theo từ
+    # An toàn TUYỆT ĐỐI: mảnh nào vẫn > max_chars → GOM TỪ THAM LAM theo KÝ TỰ (không
+    # chia theo số từ như cũ — chia số từ dễ để lọt mảnh > max_chars khi từ dài không đều).
+    # Mỗi mảnh nhiều-từ đảm bảo ≤ max_chars; từ đơn dài hơn max_chars đành để nguyên.
     safe: list[str] = []
     for p in pieces:
         if len(p) > max_chars and len(p.split()) > 1:
-            sub = max(2, math.ceil(len(p) / max_chars))
-            safe.extend(_word_chunks(p, sub))
+            cur = ""
+            for w in p.split():
+                if cur and len(cur) + 1 + len(w) > max_chars:
+                    safe.append(cur)
+                    cur = w
+                else:
+                    cur = (cur + " " + w) if cur else w
+            if cur:
+                safe.append(cur)
         else:
             safe.append(p)
     return [s.strip() for s in safe if s.strip()] or [text]
@@ -203,7 +212,9 @@ def _dp_partition(atoms: list[dict], target: float,
             if d > max_dur:
                 pen = (d - target) ** 2 + 800.0      # atom đơn quá dài (hiếm): cho phép, phạt nặng
             elif d < min_dur:
-                pen = (min_dur - d) ** 2 * 40.0 + 300.0  # block ngắn: phạt rất nặng để né
+                # block ngắn (<min): phạt rất nặng + KÈM lệch target để khi 'Mỗi cảnh' đặt
+                # lớn, block ngắn luôn ĐẮT hơn mọi phương án gộp hợp lệ (DP ưu tiên gộp).
+                pen = (d - target) ** 2 + (min_dur - d) ** 2 * 40.0 + 300.0
             else:
                 pen = (d - target) ** 2
             if best[j] + pen < best[i]:
@@ -616,7 +627,13 @@ class VoiceEngine:
         """Tạo 'voice clone prompt' từ audio mẫu — có thể lưu lại tái sử dụng."""
         if not self.ready:
             raise RuntimeError("Model chưa được nạp.")
-        wav, sr = _load_wav_mono(ref_audio, max_seconds=REF_MAX_SECONDS)
+        wav, sr = _load_wav_mono(ref_audio)
+        # Audio mẫu quá dài → tự cắt còn REF_MAX_SECONDS. Nếu người dùng có nhập ref_text
+        # (cho CẢ file dài) thì text đó KHÔNG còn khớp đoạn đã cắt → BỎ ref_text để Whisper
+        # tự nhận diện đúng đoạn 20s (tránh cặp audio/text lệch làm giọng clone kém).
+        if wav.shape[0] > int(REF_MAX_SECONDS * sr):
+            wav = np.ascontiguousarray(wav[: int(REF_MAX_SECONDS * sr)])
+            ref_text = None
         return self.model.create_voice_clone_prompt(ref_audio=(wav, sr), ref_text=ref_text)
 
     # -------------------------------------------------------------- generate

@@ -208,10 +208,18 @@ def activate(license_key):
         return False, f"Không kết nối được server license: {e}"
     if r.status_code != 200:
         return False, _err(r)
-    data = r.json()
-    if not _verify(data.get("payload", {}), data.get("signature", "")) \
-            or data["payload"].get("machine_id") != mid:
+    try:
+        data = r.json()
+    except ValueError:
+        return False, "Phản hồi server không hợp lệ (không phải JSON)."
+    payload = data.get("payload", {})
+    if not _verify(payload, data.get("signature", "")) \
+            or payload.get("machine_id") != mid:
         return False, "Phản hồi server không hợp lệ."
+    # Server dùng CHUNG cho nhiều tool → từ chối key của phần mềm khác (tránh 'kích hoạt
+    # thành công' nhầm rồi app vẫn báo sai sản phẩm).
+    if payload.get("product", "default") != PRODUCT_ID:
+        return False, "Key này thuộc phần mềm khác, không dùng cho PeiPei Clone Voice."
     _save_token(data)
     _save_hwm(_utcnow())
     return True, "Kích hoạt thành công."
@@ -222,13 +230,18 @@ def refresh():
     tok = _load_token()
     if not tok:
         return False, "Chưa kích hoạt."
-    key = tok["payload"]["key"]
+    key = (tok.get("payload") or {}).get("key")   # token hỏng cấu trúc -> không crash
+    if not key:
+        return False, "Token không hợp lệ."
     try:
         r, mid = _post("/api/refresh", key)
     except requests.RequestException:
         return False, "offline"                  # giữ token, dựa vào grace
     if r.status_code == 200:
-        data = r.json()
+        try:
+            data = r.json()                       # proxy trả 200+HTML -> không crash
+        except ValueError:
+            return False, "Phản hồi server không hợp lệ."
         if _verify(data.get("payload", {}), data.get("signature", "")) \
                 and data["payload"].get("machine_id") == mid:
             _save_token(data)
@@ -236,8 +249,17 @@ def refresh():
             return True, "Đã gia hạn."
         return False, "Phản hồi server không hợp lệ."
     if r.status_code in (401, 403, 404):
-        _delete_token()                          # bị thu hồi/hết hạn -> buộc kích hoạt lại
-        return False, _err(r)
+        # CHỈ xoá token khi CHẮC CHẮN phản hồi đến từ SERVER LICENSE (body JSON đúng dạng,
+        # có "detail"/"error"/"code"). Proxy/wifi công cộng trả 403 kèm HTML → GIỮ token,
+        # dựa vào grace (tránh xoá nhầm license hợp lệ của khách đã trả tiền).
+        try:
+            body = r.json()
+        except ValueError:
+            body = None
+        if isinstance(body, dict) and ({"detail", "error", "code"} & set(body)):
+            _delete_token()                      # server thật sự thu hồi / hết hạn
+            return False, _err(r)
+        return False, "offline"                  # không chắc là server license → giữ token
     return False, _err(r)                         # 429/5xx -> giữ token
 
 

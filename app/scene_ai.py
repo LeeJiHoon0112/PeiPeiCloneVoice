@@ -98,10 +98,22 @@ def _extract_json_groups(text: str) -> list[list[int]]:
         raise ValueError("API trả về rỗng.")
     # Gỡ rào ```json ... ```
     text = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", text.strip())
-    # Tìm đối tượng JSON đầu tiên chứa "groups"
-    m = re.search(r"\{.*\"groups\".*\}", text, re.DOTALL)
-    raw = m.group(0) if m else text
-    data = json.loads(raw)
+    # Quét từ MỖI vị trí '{' và raw_decode: lấy JSON object đầu tiên có khóa "groups".
+    # (Không dùng regex greedy '{.*groups.*}' vì nó ngậm cả chữ thừa/'}' phía sau → hỏng parse.)
+    data = None
+    _dec = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            obj, _end = _dec.raw_decode(text[i:])
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and "groups" in obj:
+            data = obj
+            break
+    if data is None:
+        data = json.loads(text)   # dự phòng: cả chuỗi là JSON thuần
     groups = data.get("groups")
     if not isinstance(groups, list):
         raise ValueError("JSON thiếu 'groups'.")
@@ -128,7 +140,8 @@ def _call_gemini(api_key: str, model: str, prompt: str, json_mode: bool = True) 
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": gen_cfg,
     }
-    r = requests.post(url, params={"key": api_key}, json=body, timeout=_TIMEOUT)
+    # Key đưa vào HEADER (không phải query param) → tránh lộ key trong URL khi lỗi bị log.
+    r = requests.post(url, headers={"x-goog-api-key": api_key}, json=body, timeout=_TIMEOUT)
     r.raise_for_status()
     data = r.json()
     return data["candidates"][0]["content"]["parts"][0]["text"]
@@ -179,10 +192,12 @@ def _list_gemini(api_key: str) -> list[str]:
     url = "https://generativelanguage.googleapis.com/v1beta/models"
     out, page = [], None
     for _ in range(10):  # phòng phân trang, tối đa 10 trang
-        params = {"key": api_key, "pageSize": 200}
+        params = {"pageSize": 200}
         if page:
             params["pageToken"] = page
-        r = requests.get(url, params=params, timeout=_TIMEOUT)
+        # Key vào HEADER thay vì query param → không lộ trong URL nếu lỗi bị log.
+        r = requests.get(url, headers={"x-goog-api-key": api_key},
+                         params=params, timeout=_TIMEOUT)
         r.raise_for_status()
         data = r.json()
         for m in data.get("models", []):

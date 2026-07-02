@@ -61,5 +61,5 @@ Type: files; Name: "{app}\.setup_done"
 [UninstallDelete]
 ; Khi GO CAI: xoa cac thu nang TU SINH (deps + model) cho sach. GIU user_data (giong da tao).
 Type: filesandordirs; Name: "{app}\models"
-Type: filesandordirs; Name: "{app}\python\Lib\site-packages"
+Type: filesandordirs; Name: "{app}\python"
 Type: files; Name: "{app}\.setup_done"

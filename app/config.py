@@ -169,6 +169,14 @@ def set_setting(key, value):
     save_settings(d)
 
 
+def delete_setting(key):
+    """Xóa hẳn 1 khóa khỏi settings.json (dùng cho migration cài đặt cũ)."""
+    d = load_settings()
+    if key in d:
+        d.pop(key)
+        save_settings(d)
+
+
 def setup_hf_cache_env():
     """Hướng HuggingFace tải model vào ./models/hf-cache (gọn trong app, dễ chia sẻ)."""
     os.makedirs(HF_CACHE_DIR, exist_ok=True)

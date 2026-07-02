@@ -160,7 +160,20 @@ def _read_number(tok: str, lang: str):
         ip, fp = tok.split(dec, 1)
     else:
         ip, fp = tok, None
-    ip = ip.replace(thou, "")
+    # Dấu phân cách hàng nghìn xử lý CHẶT: chỉ bỏ khi ĐÚNG định dạng nhóm-3 (1.234.567).
+    # 1 dấu lẻ (3.5, 1.75, 8.5) → hiểu là dấu THẬP PHÂN (người Việt hay gõ chấm). Nhiều
+    # dấu lung tung (1.2.3, 192.168.1.1) → GIỮ NGUYÊN, không bịa (theo thiết kế an toàn).
+    if thou in ip:
+        if re.fullmatch(r"\d{1,3}(?:" + re.escape(thou) + r"\d{3})+", ip):
+            ip = ip.replace(thou, "")
+        elif ip.count(thou) == 1 and fp is None:
+            a, b = ip.split(thou)
+            if a.isdigit() and b.isdigit():
+                ip, fp = a, b
+            else:
+                return None
+        else:
+            return None
     if ip == "":
         ip = "0"
     if not ip.isdigit():
@@ -187,13 +200,15 @@ _EN_MONTHS = ["", "January", "February", "March", "April", "May", "June", "July"
 
 
 # ----------------------------------------------------------------- viết tắt English
+# Danh xưng: PHÂN BIỆT HOA/THƯỜNG (không re.I) để "ms." (mili-giây) không thành "Miss",
+# "Dr" chỉ khớp khi viết hoa. "vs" thêm \b hai đầu để không dính "vsync".
 _EN_ABBR = [
-    (re.compile(r"\bMrs\.", re.I), "Missus"),
-    (re.compile(r"\bMr\.", re.I), "Mister"),
-    (re.compile(r"\bMs\.", re.I), "Miss"),
-    (re.compile(r"\bDr\.", re.I), "Doctor"),
-    (re.compile(r"\bProf\.", re.I), "Professor"),
-    (re.compile(r"\bvs\.?", re.I), "versus"),
+    (re.compile(r"\bMrs\."), "Missus"),
+    (re.compile(r"\bMr\."), "Mister"),
+    (re.compile(r"\bMs\."), "Miss"),
+    (re.compile(r"\bDr\."), "Doctor"),
+    (re.compile(r"\bProf\."), "Professor"),
+    (re.compile(r"\bvs\b\.?"), "versus"),
     (re.compile(r"\betc\.", re.I), "et cetera"),
     (re.compile(r"\be\.g\.", re.I), "for example"),
     (re.compile(r"\bi\.e\.", re.I), "that is"),
@@ -209,9 +224,10 @@ def normalize_text(text: str, language: str | None = None) -> str:
         return text
     lang = language if language in ("vi", "en") else _detect_lang(text)
     out = text
-    # Token số: BẮT BUỘC kết thúc bằng chữ số → không "ngậm" dấu chấm/phẩy của câu
-    # (vd "$1,200.50," chỉ lấy "1,200.50", bỏ dấu phẩy cuối câu).
-    num = r"\d[\d.,]*\d|\d"
+    # Token số: kết thúc bằng chữ số → không "ngậm" dấu câu. Cho phép '-' đứng đầu là
+    # SỐ ÂM CHỈ khi phía trước KHÔNG phải chữ/số → tránh nuốt gạch nối ("COVID-19",
+    # "5-10", "2024-2025", "F-16") thành số âm dính chữ. Số âm thật (" -7", "(-7)") vẫn đúng.
+    num = r"(?:(?<!\w)-)?\d[\d.,]*\d|(?:(?<!\w)-)?\d"
 
     # 1) NGÀY dd/mm/yyyy (hoặc d-m-yyyy). vi: ngày–tháng–năm; en: tháng/ngày/năm.
     #    vi: nuốt luôn chữ "ngày" có sẵn phía trước để khỏi lặp "ngày ngày".
@@ -222,7 +238,9 @@ def normalize_text(text: str, language: str | None = None) -> str:
                 return m.group(0)
             return f"ngày {_vi_int(a)} {_VI_MONTHS[b]} năm {_vi_int(y)}"
         else:
-            mo, day = a, b   # en: month/day
+            mo, day = a, b   # en mặc định month/day
+            if mo > 12 and 1 <= b <= 12 and 1 <= a <= 31:
+                mo, day = b, a   # kiểu Anh (UK): dd/mm → hoán đổi
             if not (1 <= mo <= 12 and 1 <= day <= 31):
                 return m.group(0)
             return f"{_EN_MONTHS[mo]} {_en_int(day)}, {_en_int(y)}"
@@ -268,18 +286,27 @@ def normalize_text(text: str, language: str | None = None) -> str:
 
     out = re.sub(r"(" + num + r")\s*°\s*([CF])", _deg, out)
 
+    # 5b) GIỜ hh:mm (phút BẮT BUỘC 2 chữ số để không đụng tỷ số "2:1").
+    def _time(m):
+        h, mi = int(m.group(1)), int(m.group(2))
+        if lang == "vi":
+            return f"{_vi_int(h)} giờ" + (f" {_vi_int(mi)} phút" if mi else "")
+        return f"{_en_int(h)}" + (f" {_en_int(mi)}" if mi else " o'clock")
+
+    out = re.sub(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", _time, out)
+
     # 6) SỐ đứng riêng (sau khi đã xử lý các dạng có đơn vị ở trên).
     def _num(m):
         val = _read_number(m.group(0), lang)
         return val if val is not None else m.group(0)
 
-    out = re.sub(r"-?\d[\d.,]*\d|-?\d", _num, out)
+    out = re.sub(num, _num, out)
 
     # 7) Viết tắt + ký hiệu '&'
     if lang == "en":
         for rx, rep in _EN_ABBR:
             out = rx.sub(rep, out)
-    out = re.sub(r"\s*&\s*", (" và " if lang == "vi" else " and "), out)
+    out = re.sub(r"[ \t]*&[ \t]*", (" và " if lang == "vi" else " and "), out)
 
     # Gộp khoảng trắng thừa do thay thế tạo ra (giữ nguyên xuống dòng).
     out = re.sub(r"[ \t]{2,}", " ", out)

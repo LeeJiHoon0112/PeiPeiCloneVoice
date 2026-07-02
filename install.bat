@@ -94,7 +94,7 @@ if not defined TORCH_OK (
     pause
     exit /b 1
   )
-  echo Installing CPU version (this will be SLOW)...
+  echo Installing CPU version ^(this will be SLOW^)...
   pip install --index-url https://download.pytorch.org/whl/cpu torch==2.8.0+cpu torchaudio==2.8.0+cpu
   if errorlevel 1 ( echo [ERROR] Failed to install torch. & pause & exit /b 1 )
 )
