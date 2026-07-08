@@ -2,7 +2,9 @@
 
 Đây là phần lõi clone giọng — dùng model mã nguồn mở OmniVoice (Apache-2.0, k2-fsa/OmniVoice).
 """
+import difflib
 import re
+import unicodedata
 
 import numpy as np
 
@@ -653,6 +655,24 @@ def _apply_fade(audio: np.ndarray, sr: int, fade_ms: float) -> np.ndarray:
     return x
 
 
+def _match_rms(piece: np.ndarray, ref: np.ndarray) -> np.ndarray:
+    """Khớp độ to (RMS) của đoạn MỚI về bằng đoạn CŨ mà nó thay thế — để khi 'Tạo
+    lại 1 câu' không phải chuẩn-hóa-âm-lượng TOÀN clip (làm trôi mức mỗi lần tạo
+    lại). Chặn khuếch đại ±30dB (bằng mức chặn của _normalize_loudness) và chống méo."""
+    p = np.asarray(piece, dtype=np.float32)
+    r = np.asarray(ref, dtype=np.float32)
+    rp = float(np.sqrt(np.mean(p.astype(np.float64) ** 2))) if p.size else 0.0
+    rr = float(np.sqrt(np.mean(r.astype(np.float64) ** 2))) if r.size else 0.0
+    if rp < 1e-7 or rr < 1e-7:
+        return p
+    g = max(10 ** (-30 / 20), min(10 ** (30 / 20), rr / rp))
+    y = p * np.float32(g)
+    pk = float(np.max(np.abs(y))) if y.size else 0.0
+    if pk > 0.999:
+        y = y * np.float32(0.999 / pk)
+    return y.astype(np.float32)
+
+
 def _finalize_audio(audio, sr, segments, target_lufs, trim_silence, fade_ms):
     """Hậu kỳ chung cuối generate(): cắt lặng đầu/cuối (dời mốc thời gian SRT theo),
     chuẩn hóa độ to, rồi fade 2 đầu. Trả về (audio, segments)."""
@@ -669,6 +689,118 @@ def _finalize_audio(audio, sr, segments, target_lufs, trim_silence, fade_ms):
     if fade_ms and fade_ms > 0:
         audio = _apply_fade(audio, sr, fade_ms)
     return audio, segments
+
+
+# ── Kiểm tra chất lượng giọng vừa tạo (Tầng ① — tái dùng Whisper + DSP đã có) ──
+# Ý tưởng: cho Whisper "nghe lại" audio vừa tạo rồi so với kịch bản → biết máy có
+# đọc ĐÚNG/SẠCH không (bắt đọc sai, thiếu/lặp chữ, nói vấp), cộng vài chỉ số âm
+# thanh khách quan (méo/âm lượng/lặng). KHÔNG thêm thư viện: difflib + unicodedata
+# là thư viện chuẩn; pyloudnorm/numpy đã dùng sẵn. Chấm điểm RỘNG TAY vì bản thân
+# Whisper cũng có sai số — đây là "tín hiệu tin cậy", không phải phán quyết tuyệt đối.
+QC_TARGET_LUFS = -16.0
+QC_BANDS_WORD = (0.10, 0.25)   # tỉ lệ lỗi TỪ: ≤0.10 xanh, ≤0.25 vàng, còn lại đỏ
+QC_BANDS_CHAR = (0.15, 0.30)   # tỉ lệ lỗi KÝ TỰ (Nhật/Trung): nới hơn vì CER khắt khe
+QC_STALL_GAP = 0.7             # khoảng lặng GIỮA TỪ > 0.7s → coi là "nói vấp"
+QC_MIN_DUR = 0.30              # đoạn < 0.30s: bỏ qua chấm (Whisper dễ ảo giác)
+
+
+def _qc_clean(text: str, lang: str | None):
+    """Chuẩn hóa văn bản để SO SÁNH đọc-lại: bỏ dấu câu/ký hiệu, gộp khoảng trắng,
+    casefold. Trả (tokens, char_based). char_based=True (Nhật/Trung) → so theo KÝ TỰ;
+    còn lại (Việt/Anh/Hàn) → so theo TỪ. Tái dùng _char_based đã có."""
+    t = unicodedata.normalize("NFKC", text or "")
+    kept = []
+    for ch in t:
+        cat = unicodedata.category(ch)
+        kept.append(" " if cat[0] in ("P", "S") else ch)
+    t = "".join(kept).casefold()
+    char_based = _char_based(text, lang)
+    toks = [c for c in t if not c.isspace()] if char_based else t.split()
+    return toks, char_based
+
+
+def _err_rate(ref: list, hyp: list) -> float:
+    """Tỉ lệ lỗi (WER nếu tokens là TỪ, CER nếu là KÝ TỰ) = (thay+thêm+xóa)/len(ref).
+    Dùng difflib (thư viện chuẩn) — KHÔNG cần jiwer."""
+    if not ref:
+        return 0.0 if not hyp else 1.0
+    sm = difflib.SequenceMatcher(None, ref, hyp, autojunk=False)
+    s = d = i = 0
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "replace":
+            s += max(i2 - i1, j2 - j1)
+        elif tag == "delete":
+            d += i2 - i1
+        elif tag == "insert":
+            i += j2 - j1
+    return min(1.0, (s + d + i) / max(1, len(ref)))
+
+
+def _audio_health(audio: np.ndarray, sr: int) -> dict:
+    """Chỉ số âm thanh KHÁCH QUAN (không cần model): méo tiếng (clip), độ to (LUFS),
+    lặng đầu/cuối, gần như im lặng. Tái dùng _measure_lufs / _trim_silence đã có."""
+    x = np.asarray(audio, dtype=np.float32)
+    out = {"clip": False, "peak": 0.0, "lufs": None, "loud_ok": True,
+           "lead_sil": 0.0, "tail_sil": 0.0, "near_silent": x.size == 0}
+    if x.size == 0:
+        return out
+    peak = float(np.max(np.abs(x)))
+    out["peak"] = peak
+    out["clip"] = peak >= 0.999
+    lufs = _measure_lufs(x, sr)
+    out["lufs"] = lufs
+    if lufs is not None:
+        out["loud_ok"] = abs(lufs - QC_TARGET_LUFS) <= 3.0
+    _t, lead, tail = _trim_silence(x, sr)
+    out["lead_sil"] = lead / sr
+    out["tail_sil"] = tail / sr
+    rms = float(np.sqrt(np.mean(x.astype(np.float64) ** 2)))
+    out["near_silent"] = rms < 1e-4
+    return out
+
+
+def _word_stalls(chunks, max_gap: float = QC_STALL_GAP) -> list:
+    """Từ danh sách từ [{timestamp:(start,end)}] → khoảng lặng GIỮA TỪ > max_gap giây.
+    Chỉ xét TRONG 1 câu (mốc cục bộ) để KHÔNG nhầm khoảng nghỉ giữa câu là 'vấp'."""
+    stalls = []
+    prev_end = None
+    for c in chunks or []:
+        ts = c.get("timestamp") if isinstance(c, dict) else None
+        if not ts or ts[0] is None:
+            continue
+        st, en = ts[0], ts[1]
+        if prev_end is not None and st is not None and (st - prev_end) > max_gap:
+            stalls.append(round(float(st - prev_end), 2))
+        if en is not None:
+            prev_end = en
+    return stalls
+
+
+def _band_for_err(err: float, char_based: bool) -> str:
+    g, y = QC_BANDS_CHAR if char_based else QC_BANDS_WORD
+    return "green" if err <= g else ("yellow" if err <= y else "red")
+
+
+def score_quality(rows: list, health: dict, stalls: list) -> dict:
+    """Gộp độ-chính-xác-đọc + sức-khỏe-audio thành 1 điểm 0..100 + band màu.
+    Điểm ỔN ĐỊNH giữa các lần chạy (trừ theo bậc nguyên, không dùng số lẻ dao động)."""
+    accs = [r["accuracy"] for r in rows if r.get("scored")]
+    mean_acc = sum(accs) / len(accs) if accs else 1.0
+    score = round(100 * mean_acc)
+    pen = 0
+    if health.get("clip"):
+        pen += 15
+    if not health.get("loud_ok", True):
+        pen += 8
+    if health.get("lead_sil", 0) > 0.4 or health.get("tail_sil", 0) > 0.4:
+        pen += 5
+    if health.get("near_silent"):
+        pen += 40
+    pen += min(15, 3 * len(stalls or []))
+    score = int(max(0, min(100, score - pen)))
+    band = "green" if score >= 90 else ("yellow" if score >= 75 else "red")
+    return {"score": score, "band": band, "rows": rows,
+            "health": health, "stalls": stalls or []}
 
 
 def _load_wav_mono(path: str, max_seconds: float | None = None):
@@ -815,24 +947,12 @@ class VoiceEngine:
                 except Exception:
                     pass
 
-        # Tham số chung cho mọi câu (trừ chính nội dung `text`)
-        base = dict(num_step=int(num_step))
-        if language:
-            base["language"] = language
-        if speed and abs(speed - 1.0) > 1e-3:
-            base["speed"] = float(speed)
-        # guidance_scale cao hơn = bám theo giọng mẫu sát hơn (giống hơn) nhưng
-        # quá cao dễ cứng/méo. Mặc định model là 2.0.
-        if guidance_scale and abs(guidance_scale - 2.0) > 1e-3:
-            base["guidance_scale"] = float(guidance_scale)
-
-        if voice_clone_prompt is not None:
-            base["voice_clone_prompt"] = voice_clone_prompt
-        elif ref_audio:
-            # Tự dựng prompt từ audio mẫu (qua _load_wav_mono) để tránh ffmpeg.
-            base["voice_clone_prompt"] = self.create_profile(ref_audio, ref_text or None)
-        elif instruct:
-            base["instruct"] = instruct
+        # Tham số chung cho mọi câu (trừ chính nội dung `text`) — dùng chung với
+        # regenerate_one() để tạo lại 1 câu đúng bằng thông số đã sinh ra nó.
+        base = self._base_gen_kwargs(
+            num_step=num_step, language=language, speed=speed,
+            guidance_scale=guidance_scale, voice_clone_prompt=voice_clone_prompt,
+            ref_audio=ref_audio, ref_text=ref_text, instruct=instruct)
 
         # Tách câu để (a) báo tiến độ % theo từng câu, (b) chèn ngắt nghỉ nếu cần.
         # Có nhiều câu → đọc từng câu rồi nối; chỉ chèn khoảng lặng khi pause_sec > 0.
@@ -879,3 +999,138 @@ class VoiceEngine:
         if with_segments:
             return sr, audio, seg
         return sr, audio
+
+    def _base_gen_kwargs(self, *, num_step, language=None, speed=1.0,
+                         guidance_scale=2.0, voice_clone_prompt=None,
+                         ref_audio=None, ref_text=None, instruct=None) -> dict:
+        """Dựng dict tham số cho model.generate() (dùng chung generate + regenerate_one).
+        Nguồn giọng ưu tiên: voice_clone_prompt > ref_audio (tự dựng prompt) > instruct."""
+        base = dict(num_step=int(num_step))
+        if language:
+            base["language"] = language
+        if speed and abs(speed - 1.0) > 1e-3:
+            base["speed"] = float(speed)
+        # guidance_scale cao = bám giọng mẫu sát hơn nhưng quá cao dễ cứng/méo (mặc định 2.0).
+        if guidance_scale and abs(guidance_scale - 2.0) > 1e-3:
+            base["guidance_scale"] = float(guidance_scale)
+        if voice_clone_prompt is not None:
+            base["voice_clone_prompt"] = voice_clone_prompt
+        elif ref_audio:
+            base["voice_clone_prompt"] = self.create_profile(ref_audio, ref_text or None)
+        elif instruct:
+            base["instruct"] = instruct
+        return base
+
+    def transcribe_array(self, audio, sr, language: str | None = None,
+                         word_ts: bool = False):
+        """Cho Whisper (đã nạp sẵn) 'nghe lại' 1 mảng audio trong bộ nhớ (không ghi
+        file tạm). Trả text; nếu word_ts=True trả (text, chunks) với mốc từng TỪ."""
+        if not self.ready:
+            raise RuntimeError("Model chưa được nạp.")
+        x = np.asarray(audio, dtype=np.float32)
+        gk = {"task": "transcribe"}
+        if language:
+            gk["language"] = language
+        kw = {"generate_kwargs": gk}
+        if word_ts:
+            kw["return_timestamps"] = "word"
+        res = self.model._asr_pipe({"array": x, "sampling_rate": int(sr)}, **kw)
+        text = (res.get("text") or "").strip()
+        return (text, res.get("chunks")) if word_ts else text
+
+    def check_quality(self, audio, sr, segments, language: str | None = None,
+                      progress=None, only_idx=None, reuse_rows=None) -> dict | None:
+        """Kiểm tra chất lượng audio vừa tạo: với TỪNG câu (segments), cắt đúng đoạn
+        audio rồi cho Whisper đọc lại, so với kịch bản (WER/CER) + bắt 'nói vấp' từ
+        mốc từng từ; cộng chỉ số âm thanh khách quan. Trả dict điểm/checklist hoặc
+        None nếu không đủ điều kiện. CHẠY TRONG LUỒNG NỀN (gọi model).
+
+        only_idx + reuse_rows: khi CHỈ tạo lại 1 câu → dùng lại kết quả cũ cho các câu
+        KHÔNG đổi (chữ giữ nguyên, audio chỉ dời chỗ), chỉ đọc-lại đúng câu `only_idx`
+        → tránh transcribe lại cả clip (nhanh, quan trọng trên máy CPU)."""
+        if not self.ready or not segments:
+            return None
+        x = np.asarray(audio, dtype=np.float32)
+        total_dur = len(x) / sr if sr else 0.0
+        rows = []
+        stalls_all = []
+        n = len(segments)
+        for i, seg in enumerate(segments):
+            # Tái dùng kết quả cũ cho câu không đổi (chỉ khi đang tạo lại 1 câu).
+            if (only_idx is not None and reuse_rows and i != only_idx
+                    and i < len(reuse_rows)):
+                old = dict(reuse_rows[i])
+                old["idx"] = i
+                rows.append(old)
+                stalls_all.extend(old.get("stall", []) or [])
+                if progress:
+                    try:
+                        progress(i + 1, n)
+                    except Exception:
+                        pass
+                continue
+            a = int(round(max(0.0, float(seg.get("start", 0.0))) * sr))
+            b = int(round(min(total_dur, float(seg.get("end", 0.0))) * sr))
+            piece = x[a:max(a, b)]
+            ref_txt = (seg.get("text") or "")
+            char_based = _char_based(ref_txt, language)
+            row = {"idx": i, "text": ref_txt, "char_based": char_based,
+                   "scored": False, "err": 0.0, "accuracy": 1.0,
+                   "band": "green", "stall": [], "note": ""}
+            if len(piece) / sr >= QC_MIN_DUR and ref_txt.strip():
+                try:
+                    hyp, chunks = self.transcribe_array(piece, sr, language, word_ts=True)
+                    ref_tok, cb = _qc_clean(ref_txt, language)
+                    hyp_tok, _ = _qc_clean(hyp, language)
+                    err = _err_rate(ref_tok, hyp_tok)
+                    st = _word_stalls(chunks)   # mốc CỤC BỘ trong câu → không nhầm nghỉ giữa câu
+                    row.update(scored=True, err=err, accuracy=max(0.0, 1.0 - err),
+                               band=_band_for_err(err, cb), stall=st, hyp=hyp)
+                    stalls_all.extend(st)
+                except Exception:
+                    row["note"] = "không kiểm tra được"
+            rows.append(row)
+            if progress:
+                try:
+                    progress(i + 1, n)
+                except Exception:
+                    pass
+        health = _audio_health(x, sr)
+        return score_quality(rows, health, stalls_all)
+
+    def regenerate_one(self, audio, sr, segments, idx, *, num_step, language=None,
+                       speed=1.0, guidance_scale=2.0, breath_reduce=0.0, fade_ms=0.0,
+                       voice_clone_prompt=None, ref_audio=None, ref_text=None,
+                       instruct=None):
+        """Tạo LẠI đúng 1 câu (segments[idx]) bằng CÙNG thông số đã sinh ra clip, rồi
+        ghép vào chỗ cũ. Trả (audio_mới, segments_mới). Không chuẩn-hóa-âm-lượng toàn
+        clip (dùng _match_rms cục bộ) → không trôi mức dù tạo lại nhiều lần."""
+        if not self.ready:
+            raise RuntimeError("Model chưa được nạp.")
+        x = np.asarray(audio, dtype=np.float32)
+        segs = [dict(s) for s in segments]
+        if not (0 <= idx < len(segs)):
+            return x, segs
+        seg = segs[idx]
+        total_dur = len(x) / sr if sr else 0.0
+        a = int(round(max(0.0, float(seg.get("start", 0.0))) * sr))
+        b = int(round(min(total_dur, float(seg.get("end", 0.0))) * sr))
+        b = max(a, b)
+        base = self._base_gen_kwargs(
+            num_step=num_step, language=language, speed=speed,
+            guidance_scale=guidance_scale, voice_clone_prompt=voice_clone_prompt,
+            ref_audio=ref_audio, ref_text=ref_text, instruct=instruct)
+        audios = self.model.generate(text=(seg.get("text") or "").strip(), **base)
+        piece = np.asarray(audios[0], dtype=np.float32)
+        piece = _reduce_breath(piece, sr, breath_reduce)
+        if fade_ms and fade_ms > 0:
+            piece = _apply_fade(piece, sr, min(8.0, fade_ms))
+        piece = _match_rms(piece, x[a:b])              # khớp mức to đoạn cũ, không renormalize toàn clip
+        new_x = np.concatenate([x[:a], piece, x[b:]]).astype(np.float32)
+        delta = (len(piece) - (b - a)) / sr            # dời mốc các câu SAU nó
+        seg["start"] = a / sr
+        seg["end"] = seg["start"] + len(piece) / sr
+        for j in range(idx + 1, len(segs)):
+            segs[j]["start"] = max(0.0, segs[j]["start"] + delta)
+            segs[j]["end"] = max(segs[j]["start"], segs[j]["end"] + delta)
+        return new_x, segs

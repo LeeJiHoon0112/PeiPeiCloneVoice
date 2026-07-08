@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import (
     QLabel, QPushButton, QComboBox, QLineEdit, QTextEdit, QPlainTextEdit,
     QSlider, QFileDialog, QMessageBox, QListWidget, QListWidgetItem,
     QStackedWidget, QFrame, QProgressBar, QCheckBox, QSpinBox,
-    QDialog, QDialogButtonBox,
+    QDialog, QDialogButtonBox, QScrollArea,
 )
 
 from . import config
@@ -232,6 +232,7 @@ class MainWindow(QMainWindow):
         self.profiles = ProfileManager()
         self._task = None
         self._last_output = None
+        self._last_srt = None
         self._quality_steps = [("Nhanh", 16), ("Chuẩn", 32), ("Cao", 48)]
 
         # Hàng đợi: danh sách kịch bản chờ chuyển thành giọng. Mỗi item là dict
@@ -253,6 +254,15 @@ class MainWindow(QMainWindow):
         #  - text_norm_on:  đọc số/ngày/tiền/% thành chữ trước khi sinh.
         self.audio_norm_on = bool(config.get_setting("audio_norm_on", True))
         self.text_norm_on = bool(config.get_setting("text_norm_on", True))
+
+        # Kiểm tra giọng sau khi tạo (Whisper "đọc lại" + sức khỏe audio). Mặc định
+        # THEO MÁY: có GPU → bật; CPU → tắt (chạy Whisper lần 2 chậm gấp đôi). Sentinel
+        # None = user chưa từng đặt → tự quyết ở _on_model_loaded khi biết thiết bị.
+        self._qc_pref = config.get_setting("qc_on", None)
+        self.qc_on = bool(self._qc_pref) if self._qc_pref is not None else False
+        # Chụp lại ngữ cảnh lần tạo gần nhất (giọng + tham số + audio + segments) để
+        # có thể "Tạo lại 1 câu" mà không phải nhập lại gì.
+        self._last_gen = None
 
         self.srt_on = bool(config.get_setting("srt_on", True))
         # Phụ đề dùng để CHIA CẢNH dựng video. User chọn 1 trong 2 mục đích, app
@@ -296,6 +306,12 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._refresh_profiles()
         self._load_model()
+
+        # Kiểm tra bản mới (chỉ bản BÁN): chạy NGẦM ở luồng nền SAU khi UI đã hiện,
+        # KHÔNG treo giao diện (server có thể ngủ → gọi mạng nền, timeout 10s). Không
+        # có bản mới / server chưa có /version / mất mạng → im lặng, không phiền.
+        if config.LICENSE_ENABLED:
+            QTimer.singleShot(4000, self._check_update_bg)
 
     # ================================================================= UI
     def _build_ui(self):
@@ -654,6 +670,33 @@ class MainWindow(QMainWindow):
         outrow.addWidget(self.btn_play); outrow.addWidget(self.btn_stop); outrow.addWidget(self.btn_saveas)
         ll.addLayout(outrow)
 
+        # ===== Kiểm tra giọng: điểm tổng + checklist từng câu (ẩn đến khi có kết quả) =====
+        self.qc_box = QFrame()
+        self.qc_box.setObjectName("QCBox")
+        self.qc_box.setStyleSheet(
+            "QFrame#QCBox { border: 1px solid rgba(255,255,255,0.10); border-radius: 8px; }")
+        qcl = QVBoxLayout(self.qc_box)
+        qcl.setContentsMargins(12, 10, 12, 10)
+        qcl.setSpacing(6)
+        self.qc_head = QLabel("")           # dòng điểm tổng, đổi màu theo band
+        self.qc_head.setWordWrap(True)
+        qcl.addWidget(self.qc_head)
+        self.qc_list = QVBoxLayout()        # container các dòng câu
+        self.qc_list.setSpacing(4)
+        _rows_w = QWidget(); _rows_w.setLayout(self.qc_list)
+        self.qc_scroll = QScrollArea()
+        self.qc_scroll.setWidgetResizable(True)
+        self.qc_scroll.setWidget(_rows_w)
+        self.qc_scroll.setMaximumHeight(190)
+        self.qc_scroll.setFrameShape(QFrame.NoFrame)
+        qcl.addWidget(self.qc_scroll)
+        self.qc_health = QLabel("")         # dòng tóm tắt sức khỏe audio
+        self.qc_health.setObjectName("Hint")
+        self.qc_health.setWordWrap(True)
+        qcl.addWidget(self.qc_health)
+        self.qc_box.setVisible(False)
+        ll.addWidget(self.qc_box)
+
         # ============ CỘT PHẢI: bảng tùy chọn ============
         right, rl = _panel()
         right.setFixedWidth(360)
@@ -707,6 +750,16 @@ class MainWindow(QMainWindow):
             "Giúp model đọc ĐÚNG số liệu trong kịch bản (file .SRT cũng hiện chữ đã đọc).")
         self.norm_text_cb.toggled.connect(self._toggle_text_norm)
         rl.addWidget(self.norm_text_cb)
+
+        self.qc_cb = QCheckBox("Kiểm tra giọng sau khi tạo")
+        self.qc_cb.setChecked(self.qc_on)
+        self.qc_cb.setToolTip(
+            "Sau khi tạo, cho Whisper NGHE LẠI audio rồi so với kịch bản để chấm điểm "
+            "phát âm (đọc đúng/thiếu/vấp) + kiểm âm lượng, méo tiếng.\n"
+            "Có nút 'Tạo lại' đúng câu bị lỗi. Chạy thêm 1 lượt Whisper — máy có GPU "
+            "gần như tức thì, máy chỉ CPU sẽ chậm hơn.")
+        self.qc_cb.toggled.connect(self._toggle_qc)
+        rl.addWidget(self.qc_cb)
 
         hint = QLabel("💡 Mẹo: audio mẫu sạch & rõ → giọng giống hơn.\n"
                       "Tốc độ ~0.95x, Độ giống 2.5–3.0, Giảm tiếng thở 45–70%.")
@@ -1538,6 +1591,11 @@ class MainWindow(QMainWindow):
         self.text_norm_on = bool(on)
         config.set_setting("text_norm_on", self.text_norm_on)
 
+    def _toggle_qc(self, on):
+        self.qc_on = bool(on)
+        self._qc_pref = self.qc_on          # user đã tự chọn → tôn trọng, không tự đổi theo GPU/CPU nữa
+        config.set_setting("qc_on", self.qc_on)
+
     # --------------------------------------------------------- model load
     def _load_model(self):
         self._busy(True, "Đang nạp model...", C_WARN)
@@ -1552,10 +1610,55 @@ class MainWindow(QMainWindow):
         self._task = t
         t.start()
 
+    # --------------------------------------------------- kiểm tra bản mới
+    def _check_update_bg(self):
+        """Hỏi server có bản mới hơn APP_VERSION không (luồng nền, không treo UI).
+        Có bản mới → hiện hộp thoại mời tải. Tái dùng license_client.check_update()."""
+        try:
+            from . import license_client
+        except Exception:
+            return
+        t = Task(license_client.check_update)
+        t.done.connect(self._on_update_checked)
+        t.finished.connect(lambda: setattr(self, "_upd_task", None))
+        self._upd_task = t          # giữ tham chiếu để QThread không bị thu gom sớm
+        t.start()
+
+    def _on_update_checked(self, info):
+        """info = {latest, url, message} nếu có bản mới, else None/rỗng → im lặng."""
+        if not info or not info.get("latest"):
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Có bản cập nhật mới")
+        msg = (f"Đã có phiên bản mới: {info['latest']}\n"
+               f"(bạn đang dùng {config.APP_VERSION}).")
+        if info.get("message"):
+            msg += "\n\n" + str(info["message"])
+        if info.get("url"):
+            msg += ("\n\nBấm “Tải bản mới” để mở trang tải, rồi cài đè lên bản cũ — "
+                    "GIỮ NGUYÊN license, model và giọng đã tạo.")
+        box.setText(msg)
+        dl = box.addButton("Tải bản mới", QMessageBox.AcceptRole)
+        box.addButton("Để sau", QMessageBox.RejectRole)
+        box.exec_()
+        if box.clickedButton() is dl and info.get("url"):
+            import webbrowser
+            try:
+                webbrowser.open(info["url"])
+            except Exception:
+                pass
+
     def _on_model_loaded(self):
         dev = "GPU" if self.engine.device == "cuda" else "CPU"
         self._set_status("Sẵn sàng", C_OK, device=f"Thiết bị: {dev}")
         self._busy(False)
+        # Mặc định "Kiểm tra giọng" theo THIẾT BỊ nếu user CHƯA từng chọn: GPU → bật,
+        # CPU → tắt (Whisper lần 2 chậm). Đã chọn thì tôn trọng lựa chọn của user.
+        if self._qc_pref is None:
+            self.qc_on = (self.engine.device == "cuda")
+            self.qc_cb.blockSignals(True)      # tránh ghi settings do tín hiệu toggled
+            self.qc_cb.setChecked(self.qc_on)
+            self.qc_cb.blockSignals(False)
         try:
             added = self.profiles.auto_import_old_tool_voices()
             if added:
@@ -1759,6 +1862,23 @@ class MainWindow(QMainWindow):
         common = self._gen_params()
         mode = self.mode.currentIndex()
         srt_cfg = self._srt_snapshot()   # chụp cấu hình SRT ngay ở main thread
+        qc_on = bool(self.qc_on)         # chụp cờ "Kiểm tra giọng" ở main thread
+        lang = common.get("language")
+
+        def _finish(log, sr, audio, segs, voice_src):
+            """Phần chung sau khi sinh audio: dựng SRT + (tùy chọn) kiểm tra giọng.
+            Chạy TRONG luồng nền. voice_src = nguồn giọng để 'Tạo lại 1 câu' tái dùng."""
+            _log = log or (lambda m: None)
+            srt_text, _ = self._make_srt_text(segs, srt_cfg, _log)
+            qc = None
+            if qc_on:
+                _log("Đang kiểm tra giọng (Whisper đọc lại)...")
+                try:
+                    qc = self.engine.check_quality(audio, sr, segs, language=lang)
+                except Exception as e:
+                    _log(f"⚠ Kiểm tra giọng lỗi: {e}")
+            gen_ctx = {**voice_src, "common": dict(common), "srt_cfg": srt_cfg}
+            return sr, audio, srt_text, segs, qc, gen_ctx
 
         if mode == 0:
             name = self.profile_combo.currentText().strip()
@@ -1771,8 +1891,7 @@ class MainWindow(QMainWindow):
                 sr, audio, segs = self.engine.generate(
                     text, voice_clone_prompt=prompt, progress=progress,
                     with_segments=True, **common)
-                srt_text, _ = self._make_srt_text(segs, srt_cfg, log or (lambda m: None))
-                return sr, audio, srt_text
+                return _finish(log, sr, audio, segs, {"voice_clone_prompt": prompt})
         elif mode == 1:
             ra = self.ref_audio_edit.text().strip()
             rt = self.ref_text_edit.toPlainText().strip()
@@ -1781,11 +1900,13 @@ class MainWindow(QMainWindow):
             self._name_hint = "clone"
 
             def job(log=None, progress=None):
+                # Dựng prompt clone MỘT LẦN (thay vì để generate tự dựng) để 'Tạo lại
+                # câu' sau này tái dùng, khỏi nhận diện lại audio mẫu mỗi lần.
+                prompt = self.engine.create_profile(ra, rt or None)
                 sr, audio, segs = self.engine.generate(
-                    text, ref_audio=ra, ref_text=rt or None, progress=progress,
+                    text, voice_clone_prompt=prompt, progress=progress,
                     with_segments=True, **common)
-                srt_text, _ = self._make_srt_text(segs, srt_cfg, log or (lambda m: None))
-                return sr, audio, srt_text
+                return _finish(log, sr, audio, segs, {"voice_clone_prompt": prompt})
         else:
             ins = self.instruct_edit.toPlainText().strip()
             self._name_hint = "design"
@@ -1794,8 +1915,7 @@ class MainWindow(QMainWindow):
                 sr, audio, segs = self.engine.generate(
                     text, instruct=ins or None, progress=progress,
                     with_segments=True, **common)
-                srt_text, _ = self._make_srt_text(segs, srt_cfg, log or (lambda m: None))
-                return sr, audio, srt_text
+                return _finish(log, sr, audio, segs, {"instruct": ins or None})
 
         self._run(job, self._on_generated, "Đang tạo giọng nói...",
                   pass_log=True, pass_progress=True)
@@ -1847,12 +1967,19 @@ class MainWindow(QMainWindow):
         self._run(job, done, "Đang nghe thử 1 câu...", pass_progress=True)
 
     def _on_generated(self, result):
-        # result = (sr, audio, srt_text) — srt_text có thể None nếu tắt SRT.
-        sr, audio, srt_text = result
+        # result = (sr, audio, srt_text, segs, qc, gen_ctx). srt_text/qc có thể None.
+        sr, audio, srt_text, segs, qc, gen_ctx = result
         # Lưu thẳng vào thư mục người dùng đã chọn (nếu bật tự động lưu).
         target = self.autosave_dir if self.autosave_on else None
-        self._present_audio(sr, audio, prefix=self._name_hint or "output",
-                            target_dir=target, srt_text=srt_text)
+        out = self._present_audio(sr, audio, prefix=self._name_hint or "output",
+                                  target_dir=target, srt_text=srt_text)
+        # Nhớ ngữ cảnh để "Tạo lại 1 câu" + hiển thị kết quả kiểm tra giọng. Ghi RÕ
+        # đường dẫn wav/srt của lần tạo NÀY để 'Tạo lại' ghi đè ĐÚNG file (self._last_
+        # output có thể bị 'Nghe thử' chen vào sau đó).
+        self._last_gen = {"sr": sr, "audio": audio, "segments": segs,
+                          "wav_path": out, "srt_path": self._last_srt, "qc": qc,
+                          **gen_ctx}
+        self._render_qc(qc)
 
     def _present_audio(self, sr, audio, prefix="output", target_dir=None,
                        srt_text=None):
@@ -1892,6 +2019,7 @@ class MainWindow(QMainWindow):
                 self._log(f"⚠ Không ghi được file SRT: {e}")
 
         self._last_output = out
+        self._last_srt = srt_path        # để "Tạo lại 1 câu" ghi đè đúng file .srt
         dur = len(audio) / sr
         tag = "💾 Đã tự động lưu" if autosaved else "✅"
         extra = "  + .srt" if srt_path else ""
@@ -1930,6 +2058,180 @@ class MainWindow(QMainWindow):
             import shutil
             shutil.copyfile(self._last_output, path)
             self._log(f"Đã lưu thành: {path}")
+
+    # ----------------------------------------------------- kiểm tra giọng
+    def _render_qc(self, qc):
+        """Vẽ điểm tổng + checklist từng câu. qc=None (tắt kiểm tra / lỗi) → ẩn khu này."""
+        # Xóa các dòng câu cũ.
+        while self.qc_list.count():
+            it = self.qc_list.takeAt(0)
+            w = it.widget()
+            if w:
+                w.deleteLater()
+        if not qc or not qc.get("rows"):
+            self.qc_box.setVisible(False)
+            return
+        colors = {"green": C_OK, "yellow": C_WARN, "red": C_DANGER}
+        col = colors.get(qc.get("band"), C_TEXT)
+        nbad = sum(1 for r in qc["rows"] if r.get("band") != "green")
+        ncau = len(qc["rows"])
+        warn = "không có cảnh báo" if nbad == 0 else f"{nbad} câu cần lưu ý"
+        self.qc_head.setText(f"Điểm giọng: {qc['score']}/100   ·   {ncau} câu   ·   {warn}")
+        self.qc_head.setStyleSheet(f"color:{col}; font-weight:700; font-size:15px;")
+        for r in qc["rows"]:
+            self.qc_list.addWidget(self._qc_row_widget(r, colors))
+        self.qc_health.setText(self._qc_health_text(qc))
+        self.qc_box.setVisible(True)
+
+    def _qc_row_widget(self, r, colors):
+        """1 dòng câu: chấm màu + số thứ tự & chữ + WER/CER + nút Nghe + nút Tạo lại."""
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
+        dot = QLabel("●")
+        dot.setFixedWidth(14)
+        dot.setStyleSheet(f"color:{colors.get(r.get('band'), C_TEXT)};")
+        txt = (r.get("text") or "").strip().replace("\n", " ")
+        if len(txt) > 40:
+            txt = txt[:40] + "…"
+        lbl = QLabel(f"{r['idx'] + 1}. {txt}")
+        lbl.setToolTip((r.get("text") or "").strip())
+        if r.get("scored"):
+            unit = "CER" if r.get("char_based") else "WER"
+            note = f"{unit} {round(r['err'] * 100)}%" + (" · vấp" if r.get("stall") else "")
+        else:
+            note = r.get("note") or "—"
+        nlbl = QLabel(note)
+        nlbl.setObjectName("Hint")
+        nlbl.setFixedWidth(96)
+        nlbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        play = QPushButton("▶")
+        regen = QPushButton("🔄")
+        for b, tip in ((play, "Nghe câu này"), (regen, "Tạo lại câu này")):
+            b.setObjectName("Ghost")
+            b.setFixedWidth(30)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setToolTip(tip)
+        i = r["idx"]
+        play.clicked.connect(lambda _=False, k=i: self._qc_play_sentence(k))
+        regen.clicked.connect(lambda _=False, k=i: self._qc_regen_sentence(k))
+        h.addWidget(dot)
+        h.addWidget(lbl, 1)
+        h.addWidget(nlbl)
+        h.addWidget(play)
+        h.addWidget(regen)
+        return row
+
+    def _qc_health_text(self, qc):
+        hp = qc.get("health", {}) or {}
+        parts = []
+        lufs = hp.get("lufs")
+        if lufs is not None:
+            parts.append(("✅" if hp.get("loud_ok") else "⚠️") + f" Âm lượng {lufs:.1f} LUFS")
+        parts.append("⚠️ Có méo tiếng" if hp.get("clip") else "✅ Không méo tiếng")
+        if hp.get("near_silent"):
+            parts.append("⚠️ Gần như im lặng")
+        if hp.get("lead_sil", 0) > 0.4 or hp.get("tail_sil", 0) > 0.4:
+            parts.append("⚠️ Lặng đầu/cuối dài")
+        nst = sum(len(r.get("stall", [])) for r in qc.get("rows", []))
+        if nst:
+            parts.append(f"⚠️ {nst} chỗ nói vấp")
+        parts.append("💡 Nên nghe lại 1 lượt cho chắc.")
+        return "   ·   ".join(parts)
+
+    def _qc_play_sentence(self, i):
+        """Nghe THỬ đúng 1 câu (cắt từ audio hiện tại theo mốc segment)."""
+        g = self._last_gen
+        if not g or not g.get("segments") or not (0 <= i < len(g["segments"])):
+            return
+        seg = g["segments"][i]
+        sr = g["sr"]
+        x = g["audio"]
+        a = int(round(max(0.0, float(seg["start"])) * sr))
+        b = int(round(min(len(x) / sr, float(seg["end"])) * sr))
+        piece = x[a:max(a + 1, b)]
+        try:
+            os.makedirs(config.OUTPUTS_DIR, exist_ok=True)
+            path = os.path.join(config.OUTPUTS_DIR, "_qc_preview.wav")
+            sf.write(path, piece, sr)
+            import winsound
+            winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+        except Exception as e:
+            self._log(f"Không nghe được câu: {e}")
+
+    def _qc_regen_sentence(self, i):
+        """Tạo LẠI đúng 1 câu bằng cùng giọng + tham số, ghép vào chỗ cũ, kiểm tra lại,
+        ghi đè file .wav/.srt và làm mới checklist. Việc nặng chạy ở luồng nền."""
+        g = self._last_gen
+        if not g or not g.get("segments") or not (0 <= i < len(g["segments"])):
+            return
+        if not self.engine.ready:
+            return self._error("Model chưa nạp xong.")
+        common = g.get("common", {}) or {}
+        lang = common.get("language")
+        kw = dict(
+            num_step=common.get("num_step", 32),
+            language=lang,
+            speed=common.get("speed", 1.0),
+            guidance_scale=common.get("guidance_scale", 2.0),
+            breath_reduce=common.get("breath_reduce", 0.0),
+            fade_ms=common.get("fade_ms", 0.0),
+            voice_clone_prompt=g.get("voice_clone_prompt"),
+            instruct=g.get("instruct"),
+        )
+        sr = g["sr"]
+        audio = g["audio"]
+        segs = g["segments"]
+        srt_cfg = g.get("srt_cfg")
+        prev_rows = (g.get("qc") or {}).get("rows")   # để chấm lại NHANH (chỉ câu i)
+
+        def job(log=None, progress=None):
+            _log = log or (lambda m: None)
+            _log(f"Đang tạo lại câu {i + 1}...")
+            new_audio, new_segs = self.engine.regenerate_one(audio, sr, segs, i, **kw)
+            srt_text = None
+            if srt_cfg and srt_cfg.get("on"):
+                srt_text, _ = self._make_srt_text(new_segs, srt_cfg, _log)
+            qc = None
+            try:
+                # Chỉ đọc-lại đúng câu vừa tạo; các câu khác giữ kết quả cũ (nhanh trên CPU).
+                qc = self.engine.check_quality(new_audio, sr, new_segs, language=lang,
+                                               only_idx=i, reuse_rows=prev_rows)
+            except Exception as e:
+                _log(f"⚠ Kiểm tra lại lỗi: {e}")
+            return sr, new_audio, new_segs, srt_text, qc
+
+        def done(result):
+            sr2, new_audio, new_segs, srt_text, qc = result
+            self._last_gen["audio"] = new_audio
+            self._last_gen["segments"] = new_segs
+            if qc is not None:
+                self._last_gen["qc"] = qc
+            # Ghi đè ĐÚNG file .wav/.srt của lần tạo gần nhất (KHÔNG dùng self._last_
+            # output vì có thể đã bị 'Nghe thử' trỏ sang file preview). Rồi trỏ output
+            # hiện tại về file này để nút Nghe/Lưu chính phát bản đã tạo lại.
+            wav_path = self._last_gen.get("wav_path")
+            srt_path = self._last_gen.get("srt_path")
+            try:
+                if wav_path:
+                    sf.write(wav_path, new_audio, sr2)
+                    self._last_output = wav_path
+                if srt_text and wav_path:
+                    if not srt_path:                     # lần đầu ghi SRT lỗi → suy ra cạnh .wav
+                        srt_path = os.path.splitext(wav_path)[0] + ".srt"
+                        self._last_gen["srt_path"] = srt_path
+                    with open(srt_path, "w", encoding="utf-8", newline="\n") as f:
+                        f.write(srt_text)
+                    self._last_srt = srt_path
+            except Exception as e:
+                self._log(f"⚠ Không ghi đè được file sau khi tạo lại: {e}")
+            if qc is not None:
+                self._render_qc(qc)
+            self._log(f"Đã tạo lại câu {i + 1}.")
+            self._play()
+
+        self._run(job, done, f"Đang tạo lại câu {i + 1}...", pass_log=True)
 
     # --------------------------------------------------------- pick files
     def _pick_audio(self):

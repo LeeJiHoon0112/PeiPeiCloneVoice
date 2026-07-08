@@ -25,7 +25,15 @@ OUTPUTS_DIR = os.path.join(USER_DATA_DIR, "outputs")
 # 🔴 ĐANG BẬT (True) — bản bán: bắt kích hoạt license. Đổi về False nếu muốn DEV chạy tự do.
 LICENSE_ENABLED = True
 LICENSE_SERVER_URL = "https://yt-license-server.onrender.com"
-APP_VERSION = "1.0.0"   # cho tính năng tự báo bản mới qua /version
+APP_VERSION = "1.0.1"   # để tự báo bản mới (so với manifest bên dưới)
+# Manifest cập nhật: 1 file JSON TĨNH trên GitHub Releases, chứa NHIỀU tool; app tra
+# theo key product của mình ("peipei-voice"). Bên web ra bản mới chỉ cần đổi số
+# latest_version trong file này → app khách tự báo. download_url là link CỐ ĐỊNH
+# (up đè cùng tên khi có bản mới).
+UPDATE_MANIFEST_URL = (
+    "https://github.com/LeeJiHoon0112/peipei-downloads/"
+    "releases/download/v1.0/versions.json"
+)
 # Token license + mốc chống lùi đồng hồ lưu ở %APPDATA%\PeiPeiCloneVoice (NẰM NGOÀI
 # thư mục cài → sống qua cập nhật/cài lại). TUYỆT ĐỐI không commit các file này.
 DATA_DIR = os.path.join(os.environ.get("APPDATA") or USER_DATA_DIR, "PeiPeiCloneVoice")

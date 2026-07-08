@@ -42,6 +42,31 @@ def _looks_cjk(text: str) -> bool:
     return non_space > 0 and cjk / non_space >= 0.30
 
 
+# Từ tiếng Anh phổ biến — dùng để NHẬN kịch bản tiếng Anh (không dấu Việt) mà đọc số
+# kiểu Anh, kể cả khi combo "Ngôn ngữ" lỡ để "Tiếng Việt". Kịch bản tiếng Việt THẬT
+# luôn có dấu (model cần dấu để phát âm) → được nhận qua _VI_RE trước, không dính đây.
+_EN_MARKERS = {
+    "the", "a", "an", "and", "or", "but", "of", "to", "in", "on", "at", "for", "with",
+    "as", "by", "from", "is", "are", "was", "were", "be", "been", "this", "that",
+    "these", "those", "it", "its", "he", "she", "they", "we", "you", "his", "her",
+    "their", "our", "your", "not", "no", "have", "has", "had", "will", "would", "can",
+    "could", "about", "over", "out", "into", "than", "then", "when", "where", "who",
+    "what", "which", "all", "more", "most", "one", "two", "three", "year", "years",
+    "people", "world", "time", "there", "after", "before", "how", "why", "because",
+}
+
+
+def _english_hits(text: str) -> int:
+    """Đếm số từ tiếng Anh phổ biến trong văn bản."""
+    words = re.findall(r"[a-z']+", (text or "").lower())
+    return sum(1 for w in words if w in _EN_MARKERS)
+
+
+def _looks_english(text: str) -> bool:
+    """True nếu văn bản có ≥2 từ tiếng Anh phổ biến → nhận là kịch bản tiếng Anh."""
+    return _english_hits(text) >= 2
+
+
 # ------------------------------------------------------------- đọc số: Tiếng Việt
 _VI_DIGITS = ["không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín"]
 _VI_SCALE = ["", "nghìn", "triệu", "tỉ"]
@@ -244,9 +269,32 @@ def normalize_text(text: str, language: str | None = None) -> str:
     # hoặc văn bản trông là CJK → GIỮ NGUYÊN, tránh nhét chữ số kiểu Anh vào.
     if language and language not in ("vi", "en"):
         return text
-    if language is None and _looks_cjk(text):
+    if _looks_cjk(text):
         return text
-    lang = language if language in ("vi", "en") else _detect_lang(text)
+    # NGÔN NGỮ ĐỌC SỐ theo NỘI DUNG kịch bản, KHÔNG mù quáng theo combo giọng. Quyết
+    # theo MẬT ĐỘ dấu tiếng Việt + số từ tiếng Anh phổ biến (không để 1 ký tự có dấu
+    # lẻ như "café" làm cả bài tiếng Anh bị đọc số kiểu Việt):
+    #  - dấu Việt DÀY (≥2% chữ cái)      → 'vi' (chắc chắn tiếng Việt)
+    #  - nhiều từ tiếng Anh (≥2)         → 'en' (kịch bản Anh, kể cả vài dấu lẻ; vd
+    #       "For over 300,000 years" → "three hundred thousand", KHÔNG phải "ba trăm phẩy...")
+    #  - có dấu Việt thưa, không rõ Anh  → 'vi'
+    #  - còn lại                          → 'en' (hoặc combo nếu có)
+    vi_hits = len(_VI_RE.findall(text))
+    en_hits = _english_hits(text)
+    letters = sum(1 for c in text if c.isalpha())
+    vi_density = vi_hits / letters if letters else 0.0
+    if en_hits >= 3 and en_hits > vi_hits:
+        lang = "en"            # nhiều từ tiếng Anh, áp đảo dấu Việt → chắc chắn Anh
+    elif vi_density >= 0.02:
+        lang = "vi"            # dấu Việt DÀY → tiếng Việt
+    elif en_hits >= 2:
+        lang = "en"
+    elif vi_hits >= 1:
+        lang = "vi"
+    elif en_hits >= 1:
+        lang = "en"
+    else:
+        lang = language if language in ("vi", "en") else "en"
     out = text
     # Token số: kết thúc bằng chữ số → không "ngậm" dấu câu. Cho phép '-' đứng đầu là
     # SỐ ÂM CHỈ khi phía trước KHÔNG phải chữ/số → tránh nuốt gạch nối ("COVID-19",

@@ -274,16 +274,24 @@ def _ver_tuple(s):
 
 
 def check_update():
-    """Trả dict {latest,url,message} nếu server có bản mới hơn APP_VERSION, else None."""
+    """Trả dict {latest,url,message} nếu manifest có bản mới hơn APP_VERSION cho product
+    NÀY, else None. Manifest = 1 file JSON tĩnh (GitHub Releases) chứa nhiều tool; tra
+    theo key product ("peipei-voice"). Không có key của mình / lỗi mạng → None (im lặng)."""
+    url = getattr(config, "UPDATE_MANIFEST_URL", "")
+    if not url:
+        return None
     try:
-        r = requests.get(config.LICENSE_SERVER_URL.rstrip("/") + "/version", timeout=10)
+        # allow_redirects=True (mặc định): GitHub Releases trả 302 → CDN, requests tự đi tiếp.
+        r = requests.get(url, timeout=10)
         if r.status_code != 200:
             return None
-        d = r.json()
-        latest = d.get("latest_version", "")
+        entry = r.json().get(PRODUCT_ID)      # object của riêng tool này trong manifest
+        if not isinstance(entry, dict):
+            return None                        # manifest không có key của mình → bỏ qua
+        latest = entry.get("latest_version", "")
         if latest and _ver_tuple(latest) > _ver_tuple(config.APP_VERSION):
-            return {"latest": latest, "url": d.get("download_url", ""),
-                    "message": d.get("message", "")}
+            return {"latest": latest, "url": entry.get("download_url", ""),
+                    "message": entry.get("message", "")}
     except Exception:
         return None
     return None

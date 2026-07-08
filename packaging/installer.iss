@@ -8,7 +8,7 @@
 ; ============================================================
 
 #define MyAppName "PeiPei Clone Voice"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.1"
 #define MyAppPublisher "PeiPei"
 #define MyAppExe "run.bat"
 #define IconRel "..\release\icon.ico"
