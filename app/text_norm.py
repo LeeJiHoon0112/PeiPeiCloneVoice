@@ -279,22 +279,21 @@ def normalize_text(text: str, language: str | None = None) -> str:
     #       "For over 300,000 years" → "three hundred thousand", KHÔNG phải "ba trăm phẩy...")
     #  - có dấu Việt thưa, không rõ Anh  → 'vi'
     #  - còn lại                          → 'en' (hoặc combo nếu có)
-    vi_hits = len(_VI_RE.findall(text))
-    en_hits = _english_hits(text)
-    letters = sum(1 for c in text if c.isalpha())
-    vi_density = vi_hits / letters if letters else 0.0
-    if en_hits >= 3 and en_hits > vi_hits:
-        lang = "en"            # nhiều từ tiếng Anh, áp đảo dấu Việt → chắc chắn Anh
-    elif vi_density >= 0.02:
-        lang = "vi"            # dấu Việt DÀY → tiếng Việt
-    elif en_hits >= 2:
-        lang = "en"
-    elif vi_hits >= 1:
-        lang = "vi"
-    elif en_hits >= 1:
-        lang = "en"
-    else:
-        lang = language if language in ("vi", "en") else "en"
+    # Quyết bằng MẬT ĐỘ DẤU TIẾNG VIỆT — tín hiệu chắc chắn nhất, KHÔNG phụ thuộc combo
+    # giọng (combo lỡ để "Tiếng Việt" mà kịch bản tiếng Anh vẫn phải đọc số kiểu Anh).
+    #   - Kịch bản tiếng Việt THẬT (dùng cho TTS) luôn dày dấu: ~15-35% số chữ cái.
+    #   - Kịch bản tiếng Anh dù lẫn tên riêng Việt ("Điện Biên Phủ", "café") chỉ vài %.
+    # Ngưỡng 10% tách sạch 2 nhóm. KHÔNG đếm "từ tiếng Anh phổ biến" nữa vì kịch bản
+    # nhiều danh từ riêng (quân sự, lịch sử) hay thiếu từ phổ biến → bị nhận nhầm là Việt.
+    # BỎ TỪ VIẾT HOA (tên riêng: "Điện Biên Phủ", "Khe Sanh"...) trước khi đo — nếu không,
+    # câu tiếng Anh nhắc địa danh Việt sẽ bị tính mật độ dấu cao giả → nhận nhầm tiếng Việt.
+    # Tiếng Việt thật có dấu ở CẢ từ thường nên vẫn được nhận đúng.
+    words = re.findall(r"[^\W\d_]+", text, re.UNICODE)
+    body = [w for w in words if not w[:1].isupper()]
+    pool = "".join(body) if body else "".join(words)   # toàn chữ HOA → đo trên tất cả
+    vi_hits = len(_VI_RE.findall(pool))
+    vi_density = vi_hits / len(pool) if pool else 0.0
+    lang = "vi" if vi_density >= 0.10 else "en"
     out = text
     # Token số: kết thúc bằng chữ số → không "ngậm" dấu câu. Cho phép '-' đứng đầu là
     # SỐ ÂM CHỈ khi phía trước KHÔNG phải chữ/số → tránh nuốt gạch nối ("COVID-19",
